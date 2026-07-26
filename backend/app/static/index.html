@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>TranscribeApp</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e7e9ee;
+    --muted: #8b93a3;
+    --accent: #5b8cff;
+    --accent-2: #7c5cff;
+    --ok: #35c98f;
+    --warn: #f5a623;
+    --err: #ef5757;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: radial-gradient(1200px 600px at 20% -10%, #1b2030 0%, var(--bg) 60%);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  header {
+    padding: 28px 32px 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header .logo {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 15px;
+  }
+  header h1 { font-size: 18px; font-weight: 600; margin: 0; }
+  header .sub { color: var(--muted); font-size: 13px; margin-left: 4px; }
+  header .status-pill {
+    margin-left: auto;
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+  }
+  header .status-pill .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+  }
+  header .status-pill.online .dot { background: var(--ok); }
+  header .status-pill.offline .dot { background: var(--err); }
+
+  main {
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    gap: 20px;
+    padding: 20px 32px 40px;
+    max-width: 1300px;
+    margin: 0 auto;
+  }
+  @media (max-width: 860px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  .card h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--muted);
+    margin: 0 0 14px;
+  }
+
+  .dropzone {
+    border: 1.5px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 28px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+    color: var(--muted);
+  }
+  .dropzone:hover, .dropzone.drag {
+    border-color: var(--accent);
+    background: #17203a55;
+    color: var(--text);
+  }
+  .dropzone svg { margin-bottom: 8px; opacity: .8; }
+  .dropzone .fname { margin-top: 8px; font-size: 12.5px; color: var(--accent); word-break: break-all; }
+  input[type=file] { display: none; }
+
+  select, button, input[type=text] {
+    font-family: inherit;
+    font-size: 13.5px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    padding: 9px 12px;
+  }
+  .row { display: flex; gap: 10px; margin-top: 12px; }
+  .row select { flex: 1; }
+
+  button.primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border: none;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 14px;
+    padding: 11px 12px;
+    transition: opacity .15s, transform .05s;
+  }
+  button.primary:hover { opacity: .92; }
+  button.primary:active { transform: scale(.99); }
+  button.primary:disabled { opacity: .4; cursor: not-allowed; }
+
+  button.ghost {
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  button.ghost:hover { color: var(--text); border-color: var(--accent); }
+
+  .setting { margin-top: 14px; }
+  .setting label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
+  .setting input { width: 100%; }
+
+  #jobList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  #jobList li {
+    padding: 11px 12px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    cursor: pointer;
+    font-size: 13px;
+    transition: border-color .15s, background .15s;
+  }
+  #jobList li:hover { border-color: var(--accent); }
+  #jobList li.active { border-color: var(--accent); background: #1c2740; }
+  #jobList li .fn { font-weight: 500; margin-bottom: 4px; word-break: break-all; }
+  #jobList .empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
+
+  .badge {
+    display: inline-block;
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    padding: 2px 7px;
+    border-radius: 5px;
+  }
+  .badge.uploading, .badge.queued { background: #2a3040; color: #9db2e8; }
+  .badge.processing, .badge.retrying { background: #3a3016; color: var(--warn); }
+  .badge.completed { background: #14332a; color: var(--ok); }
+  .badge.failed { background: #3a1a1a; color: var(--err); }
+  .badge.cancelled { background: #2a2a2a; color: var(--muted); }
+
+  .detail-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  .detail-top h2 { margin: 0; }
+  .detail-meta { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .detail-actions { display: flex; gap: 8px; }
+  .detail-actions button { font-size: 12.5px; padding: 7px 11px; }
+
+  .progressbar {
+    height: 4px; width: 100%; background: var(--border);
+    border-radius: 4px; overflow: hidden; margin: 14px 0;
+  }
+  .progressbar .fill {
+    height: 100%; width: 30%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    animation: slide 1.4s ease-in-out infinite;
+  }
+  @keyframes slide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+  }
+
+  .transcript {
+    margin-top: 16px;
+    white-space: pre-wrap;
+    line-height: 1.65;
+    font-size: 14.5px;
+    max-height: 55vh;
+    overflow-y: auto;
+    padding-right: 6px;
+  }
+  .transcript .speaker {
+    color: var(--accent);
+    font-weight: 700;
+    margin-top: 16px;
+    display: block;
+    font-size: 12.5px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+  }
+  .transcript .speaker:first-child { margin-top: 0; }
+
+  .empty-state {
+    color: var(--muted);
+    font-size: 13.5px;
+    padding: 40px 10px;
+    text-align: center;
+  }
+  .error-box {
+    margin-top: 14px;
+    background: #2a1414;
+    border: 1px solid #4a2323;
+    color: #ff9a9a;
+    padding: 12px 14px;
+    border-radius: 9px;
+    font-size: 13px;
+  }
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--panel-2); border: 1px solid var(--border);
+    padding: 10px 18px; border-radius: 9px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .25s;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">TA</div>
+  <h1>TranscribeApp</h1>
+  <span class="sub">AI transcription &amp; speaker diarization</span>
+  <div class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">checking…</span></div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>New Job</h2>
+    <div class="dropzone" id="dropzone">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4M12 4l-4 4M12 4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+      <div>Click to choose or drag a file here</div>
+      <div style="font-size:11.5px;margin-top:4px;">mp3, wav, m4a, aac, ogg, flac, mp4, mov, mkv, avi</div>
+      <div class="fname" id="fname"></div>
+    </div>
+    <input type="file" id="fileInput" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.mp4,.mov,.mkv,.avi" />
+
+    <div class="row">
+      <select id="providerSelect">
+        <option value="">Default provider (server config)</option>
+        <option value="deepgram">Deepgram</option>
+        <option value="whisper">Whisper</option>
+        <option value="assemblyai">AssemblyAI</option>
+        <option value="gladia">Gladia</option>
+      </select>
+    </div>
+
+    <button class="primary" id="uploadBtn" disabled>Upload &amp; Start Job</button>
+
+    <details style="margin-top:16px;">
+      <summary style="cursor:pointer;color:var(--muted);font-size:12.5px;">Connection settings</summary>
+      <div class="setting">
+        <label>Backend URL</label>
+        <input type="text" id="backendUrl" />
+      </div>
+      <div class="setting">
+        <label>API Key</label>
+        <input type="text" id="apiKey" />
+      </div>
+      <button class="ghost" id="saveSettingsBtn" style="margin-top:10px;width:100%;">Save</button>
+    </details>
+
+    <h2 style="margin-top:22px;">Jobs</h2>
+    <ul id="jobList"><li class="empty">No jobs yet</li></ul>
+  </div>
+
+  <div class="card" id="detailCard">
+    <div class="empty-state" id="emptyDetail">Upload a file or select a job on the left to see its transcript here.</div>
+    <div id="detailContent" style="display:none;">
+      <div class="detail-top">
+        <div>
+          <h2 id="detailFilename" style="text-transform:none;letter-spacing:0;font-size:16px;color:var(--text);"></h2>
+          <div class="detail-meta" id="detailMeta"></div>
+        </div>
+        <div class="detail-actions">
+          <button class="ghost" id="cancelBtn">Cancel</button>
+          <button class="ghost" id="deleteBtn">Delete</button>
+        </div>
+      </div>
+
+      <div class="progressbar" id="progressbar" style="display:none;"><div class="fill"></div></div>
+      <div class="error-box" id="errorBox" style="display:none;"></div>
+
+      <div class="transcript" id="transcriptBox"></div>
+
+      <div class="row" id="exportRow" style="display:none;">
+        <select id="exportFormat">
+          <option value="txt">TXT</option>
+          <option value="json">JSON</option>
+          <option value="srt">SRT</option>
+          <option value="vtt">VTT</option>
+        </select>
+        <button class="ghost" id="exportBtn">Download</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+let backendUrl = localStorage.getItem('ta_backend_url') || window.location.origin;
+let apiKey = localStorage.getItem('ta_api_key') || 'dev-desktop-key-change-me';
+$('backendUrl').value = backendUrl;
+$('apiKey').value = apiKey;
+
+let selectedFile = null;
+let activeJobId = null;
+let jobsCache = [];
+let pollTimer = null;
+
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function headers(json = false) {
+  const h = { 'X-API-Key': apiKey };
+  if (json) h['Content-Type'] = 'application/json';
+  return h;
+}
+
+$('saveSettingsBtn').addEventListener('click', () => {
+  backendUrl = $('backendUrl').value.trim().replace(/\/$/, '');
+  apiKey = $('apiKey').value.trim();
+  localStorage.setItem('ta_backend_url', backendUrl);
+  localStorage.setItem('ta_api_key', apiKey);
+  toast('Settings saved');
+  checkHealth();
+  loadJobs();
+});
+
+// ---- Upload ----
+$('dropzone').addEventListener('click', () => $('fileInput').click());
+$('dropzone').addEventListener('dragover', (e) => { e.preventDefault(); $('dropzone').classList.add('drag'); });
+$('dropzone').addEventListener('dragleave', () => $('dropzone').classList.remove('drag'));
+$('dropzone').addEventListener('drop', (e) => {
+  e.preventDefault();
+  $('dropzone').classList.remove('drag');
+  if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+});
+$('fileInput').addEventListener('change', (e) => {
+  if (e.target.files.length) setFile(e.target.files[0]);
+});
+function setFile(file) {
+  selectedFile = file;
+  $('fname').textContent = file.name;
+  $('uploadBtn').disabled = false;
+}
+
+$('uploadBtn').addEventListener('click', async () => {
+  if (!selectedFile) return;
+  $('uploadBtn').disabled = true;
+  $('uploadBtn').textContent = 'Uploading…';
+
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+  const provider = $('providerSelect').value;
+  if (provider) fd.append('provider', provider);
+
+  try {
+    const resp = await fetch(`${backendUrl}/upload`, { method: 'POST', headers: headers(), body: fd });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `Upload failed (${resp.status})`);
+    }
+    const data = await resp.json();
+    toast('Job queued successfully');
+    selectedFile = null;
+    $('fname').textContent = '';
+    $('fileInput').value = '';
+    $('uploadBtn').textContent = 'Upload & Start Job';
+    $('uploadBtn').disabled = true;
+    await loadJobs();
+    selectJob(data.job_id);
+  } catch (e) {
+    toast(e.message);
+    $('uploadBtn').textContent = 'Upload & Start Job';
+    $('uploadBtn').disabled = false;
+  }
+});
+
+// ---- Health ----
+async function checkHealth() {
+  const pill = $('statusPill');
+  try {
+    const resp = await fetch(`${backendUrl}/health`);
+    if (!resp.ok) throw new Error();
+    const data = await resp.json();
+    pill.className = 'status-pill online';
+    $('statusText').textContent = `online · queue: ${data.queue_length} · failed: ${data.failed_jobs}`;
+  } catch {
+    pill.className = 'status-pill offline';
+    $('statusText').textContent = 'backend unreachable';
+  }
+}
+
+// ---- Job list ----
+async function loadJobs() {
+  try {
+    const resp = await fetch(`${backendUrl}/jobs?limit=100`, { headers: headers() });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    jobsCache = data.jobs || [];
+    renderJobList();
+    if (activeJobId) renderDetail(jobsCache.find(j => j.id === activeJobId));
+  } catch {}
+}
+
+function renderJobList() {
+  const ul = $('jobList');
+  if (!jobsCache.length) {
+    ul.innerHTML = '<li class="empty">No jobs yet</li>';
+    return;
+  }
+  ul.innerHTML = '';
+  jobsCache.forEach(job => {
+    const li = document.createElement('li');
+    li.className = job.id === activeJobId ? 'active' : '';
+    li.innerHTML = `<div class="fn">${escapeHtml(job.original_filename)}</div><span class="badge ${job.status}">${job.status}</span>`;
+    li.addEventListener('click', () => selectJob(job.id));
+    ul.appendChild(li);
+  });
+}
+
+function selectJob(jobId) {
+  activeJobId = jobId;
+  renderJobList();
+  const job = jobsCache.find(j => j.id === jobId);
+  renderDetail(job);
+}
+
+async function renderDetail(job) {
+  if (!job) return;
+  $('emptyDetail').style.display = 'none';
+  $('detailContent').style.display = 'block';
+  $('detailFilename').textContent = job.original_filename;
+  $('detailMeta').innerHTML = `<span class="badge ${job.status}">${job.status}</span> &nbsp; provider: ${job.provider} &nbsp; created: ${new Date(job.created_at).toLocaleString()}`;
+
+  $('errorBox').style.display = 'none';
+  $('progressbar').style.display = 'none';
+  $('exportRow').style.display = 'none';
+  $('transcriptBox').innerHTML = '';
+
+  if (['queued', 'uploading', 'processing', 'retrying'].includes(job.status)) {
+    $('progressbar').style.display = 'block';
+    $('transcriptBox').innerHTML = '<div class="empty-state">Processing on the server — this page can be closed and reopened anytime.</div>';
+  } else if (job.status === 'failed') {
+    $('errorBox').style.display = 'block';
+    $('errorBox').textContent = job.error_message || 'Unknown error';
+  } else if (job.status === 'cancelled') {
+    $('transcriptBox').innerHTML = '<div class="empty-state">This job was cancelled.</div>';
+  } else if (job.status === 'completed') {
+    $('exportRow').style.display = 'flex';
+    try {
+      const resp = await fetch(`${backendUrl}/jobs/${job.id}/result`, { headers: headers() });
+      const data = await resp.json();
+      $('transcriptBox').innerHTML = formatTranscript(data.segments || []);
+    } catch {
+      $('transcriptBox').innerHTML = '<div class="empty-state">Could not load transcript.</div>';
+    }
+  }
+}
+
+function formatTranscript(segments) {
+  if (!segments.length) return '<div class="empty-state">Empty transcript.</div>';
+  let html = '';
+  let currentSpeaker = null;
+  segments.forEach(seg => {
+    if (seg.speaker !== currentSpeaker) {
+      html += `<span class="speaker">${escapeHtml(seg.speaker)}</span>`;
+      currentSpeaker = seg.speaker;
+    }
+    html += escapeHtml(seg.text) + ' ';
+  });
+  return html;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str ?? '';
+  return div.innerHTML;
+}
+
+// ---- Actions ----
+$('cancelBtn').addEventListener('click', async () => {
+  if (!activeJobId) return;
+  await fetch(`${backendUrl}/jobs/${activeJobId}/cancel`, { method: 'POST', headers: headers() });
+  toast('Job cancelled');
+  loadJobs();
+});
+
+$('deleteBtn').addEventListener('click', async () => {
+  if (!activeJobId) return;
+  if (!confirm('Delete this job permanently?')) return;
+  await fetch(`${backendUrl}/jobs/${activeJobId}`, { method: 'DELETE', headers: headers() });
+  toast('Job deleted');
+  activeJobId = null;
+  $('detailContent').style.display = 'none';
+  $('emptyDetail').style.display = 'block';
+  loadJobs();
+});
+
+$('exportBtn').addEventListener('click', async () => {
+  if (!activeJobId) return;
+  const fmt = $('exportFormat').value;
+  try {
+    const resp = await fetch(`${backendUrl}/jobs/${activeJobId}/export?format=${fmt}`, { headers: headers() });
+    const text = await resp.text();
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `transcript.${fmt}`;
+    a.click();
+  } catch (e) {
+    toast('Export failed');
+  }
+});
+
+// ---- Polling ----
+checkHealth();
+loadJobs();
+setInterval(checkHealth, 8000);
+setInterval(loadJobs, 4000);
+</script>
+</body>
+</html>
