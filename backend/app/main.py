@@ -39,6 +39,12 @@ def _start_inline_worker():
     conn = Redis.from_url(worker_settings.REDIS_URL)
     queue = Queue(worker_settings.QUEUE_NAME, connection=conn)
     worker = Worker([queue], connection=conn)
+
+    # RQ normally installs SIGINT/SIGTERM handlers, which only works in the
+    # main thread. We're running inside a background thread here, so disable
+    # that - the container itself handles shutdown signals for us instead.
+    worker._install_signal_handlers = lambda: None
+
     worker.work(with_scheduler=True)
 
 
