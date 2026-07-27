@@ -29,11 +29,15 @@ def _start_inline_worker():
     so local Docker Compose (which already runs a separate worker container)
     is unaffected.
 
-    IMPORTANT: RQ's default Worker forks a subprocess per job and monitors it
-    using OS signals (SIGALRM/SIGINT), which only work in a process's main
-    thread. Since this worker runs inside a background thread here, we use
-    SimpleWorker (executes jobs in-process, no fork) AND explicitly disable
-    signal-based timeouts, since both would otherwise crash immediately.
+    IMPORTANT: RQ uses OS signals in TWO places that only work in a
+    process's main thread - both must be disabled since this runs in a
+    background thread:
+      1. work() unconditionally calls _install_signal_handlers() for
+         SIGINT/SIGTERM - overridden to a no-op below.
+      2. Per-job timeout enforcement uses SIGALRM via death_penalty_class -
+         replaced with a no-op death penalty below. Our own provider calls
+         already have their own timeouts (see providers/*.py), so this is
+         an acceptable tradeoff for running inside a thread.
     """
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -44,10 +48,6 @@ def _start_inline_worker():
     from app.config import settings as worker_settings
 
     class NoOpDeathPenalty(BaseDeathPenalty):
-        """Disables RQ's signal-based job timeout enforcement, which requires
-        the main thread and would otherwise crash here. Our own provider
-        calls already have their own timeouts (see providers/*.py), so this
-        is an acceptable tradeoff for running inside a thread."""
         def setup_death_penalty(self):
             pass
 
@@ -60,6 +60,7 @@ def _start_inline_worker():
 
     worker = SimpleWorker([queue], connection=conn)
     worker.death_penalty_class = NoOpDeathPenalty
+    worker._install_signal_handlers = lambda: None  # no-op - main-thread only
 
     logger.info("Inline worker thread: starting work loop")
     worker.work(with_scheduler=True)
