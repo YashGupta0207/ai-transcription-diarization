@@ -3,6 +3,7 @@ FastAPI application entrypoint.
 Run with: uvicorn app.main:app --reload   (from backend/ directory)
 """
 import os
+import threading
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -14,9 +15,32 @@ from app.database import init_db
 from app.api import jobs, health
 from app.utils.logging_config import setup_logging
 
+logger = setup_logging("backend")
+
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
-logger = setup_logging("backend")
+
+def _start_inline_worker():
+    """
+    Runs the RQ worker loop inside this same process/container.
+    Used on Render's free tier since Background Worker services there have
+    no free instance type (minimum $7/month) - unlike Web Services, which do
+    have a free option. Only activates when RUN_WORKER_INLINE=true is set,
+    so local Docker Compose (which already runs a separate worker container)
+    is unaffected.
+    """
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+    from redis import Redis
+    from rq import Worker, Queue
+    from app.config import settings as worker_settings
+
+    logger.info("Inline worker thread: connecting to Redis")
+    conn = Redis.from_url(worker_settings.REDIS_URL)
+    queue = Queue(worker_settings.QUEUE_NAME, connection=conn)
+    worker = Worker([queue], connection=conn)
+    worker.work(with_scheduler=True)
+
 
 app = FastAPI(
     title="TranscribeApp API",
@@ -36,7 +60,6 @@ app.include_router(jobs.upload_router)
 app.include_router(jobs.router)
 
 if settings.STORAGE_BACKEND == "local":
-    import os
     os.makedirs(settings.LOCAL_STORAGE_DIR, exist_ok=True)
     app.mount("/files", StaticFiles(directory=settings.LOCAL_STORAGE_DIR), name="files")
 
@@ -45,6 +68,11 @@ if settings.STORAGE_BACKEND == "local":
 def on_startup():
     logger.info("Starting up - initializing database")
     init_db()
+
+    if os.environ.get("RUN_WORKER_INLINE", "").lower() == "true":
+        logger.info("Starting inline background worker thread")
+        thread = threading.Thread(target=_start_inline_worker, daemon=True)
+        thread.start()
 
 
 @app.get("/")
