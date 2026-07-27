@@ -28,23 +28,40 @@ def _start_inline_worker():
     have a free option. Only activates when RUN_WORKER_INLINE=true is set,
     so local Docker Compose (which already runs a separate worker container)
     is unaffected.
+
+    IMPORTANT: RQ's default Worker forks a subprocess per job and monitors it
+    using OS signals (SIGALRM/SIGINT), which only work in a process's main
+    thread. Since this worker runs inside a background thread here, we use
+    SimpleWorker (executes jobs in-process, no fork) AND explicitly disable
+    signal-based timeouts, since both would otherwise crash immediately.
     """
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
     from redis import Redis
-    from rq import Worker, Queue
+    from rq import Queue
+    from rq.worker import SimpleWorker
+    from rq.timeouts import BaseDeathPenalty
     from app.config import settings as worker_settings
+
+    class NoOpDeathPenalty(BaseDeathPenalty):
+        """Disables RQ's signal-based job timeout enforcement, which requires
+        the main thread and would otherwise crash here. Our own provider
+        calls already have their own timeouts (see providers/*.py), so this
+        is an acceptable tradeoff for running inside a thread."""
+        def setup_death_penalty(self):
+            pass
+
+        def cancel_death_penalty(self):
+            pass
 
     logger.info("Inline worker thread: connecting to Redis")
     conn = Redis.from_url(worker_settings.REDIS_URL)
     queue = Queue(worker_settings.QUEUE_NAME, connection=conn)
-    worker = Worker([queue], connection=conn)
 
-    # RQ normally installs SIGINT/SIGTERM handlers, which only works in the
-    # main thread. We're running inside a background thread here, so disable
-    # that - the container itself handles shutdown signals for us instead.
-    worker._install_signal_handlers = lambda: None
+    worker = SimpleWorker([queue], connection=conn)
+    worker.death_penalty_class = NoOpDeathPenalty
 
+    logger.info("Inline worker thread: starting work loop")
     worker.work(with_scheduler=True)
 
 
