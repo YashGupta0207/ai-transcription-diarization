@@ -14,6 +14,14 @@ from app.providers.base import SpeechProvider, TranscriptionResult, TranscriptSe
 from app.config import settings
 
 
+def _speaker_label(value) -> str:
+    """Normalize Deepgram's optional numeric speaker value safely."""
+    try:
+        return f"Speaker {int(value) + 1}"
+    except (TypeError, ValueError):
+        return "Speaker 1"
+
+
 class DeepgramProvider(SpeechProvider):
     API_URL = "https://api.deepgram.com/v1/listen"
 
@@ -41,10 +49,11 @@ class DeepgramProvider(SpeechProvider):
 
         segments = []
         words = []
-        utterances = data.get("results", {}).get("utterances", [])
+        results = data.get("results", {})
+        utterances = results.get("utterances", [])
         for i, utt in enumerate(utterances):
             speaker_idx = utt.get("speaker", 0)
-            speaker_label = f"Speaker {speaker_idx + 1}"
+            speaker_label = _speaker_label(speaker_idx)
             segments.append(
                 TranscriptSegment(
                     speaker=speaker_label,
@@ -58,6 +67,8 @@ class DeepgramProvider(SpeechProvider):
             # Additive only - existing transcript/segment behavior above is
             # completely unchanged.
             for w in utt.get("words", []):
+                if not w.get("word") or w.get("start") is None or w.get("end") is None:
+                    continue
                 words.append(
                     WordTimestamp(
                         speaker=speaker_label,
@@ -68,4 +79,16 @@ class DeepgramProvider(SpeechProvider):
                     )
                 )
 
+        # Deepgram can return no utterances for short clips or a request
+        # configuration change, while still returning canonical word timing.
+        # Preserve that timing rather than approximating it.
+        if not words:
+            alternative = ((results.get("channels") or [{}])[0].get("alternatives") or [{}])[0]
+            for w in alternative.get("words", []):
+                if not w.get("word") or w.get("start") is None or w.get("end") is None:
+                    continue
+                speaker_label = _speaker_label(w.get("speaker", 0))
+                words.append(WordTimestamp(speaker=speaker_label, word=w.get("punctuated_word") or w["word"],
+                                           start=w["start"], end=w["end"], confidence=w.get("confidence")))
+        words.sort(key=lambda word: word.start)
         return TranscriptionResult(segments=segments, raw_response=data, language=language, words=words)

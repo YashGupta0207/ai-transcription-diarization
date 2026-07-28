@@ -58,6 +58,17 @@ def test_save_results_creates_segments_and_speakers(db_session):
     assert job.readable_transcript.startswith("Speaker 1")
 
 
+def test_save_results_persists_word_timestamps_in_order(db_session):
+    repo = JobRepository(db_session)
+    job = repo.create_job("test.mp3", "deepgram")
+    repo.save_results(job, [], "", {}, words=[
+        {"speaker": "Speaker 1", "word": "Hello", "start": 0.0, "end": 0.4, "confidence": 0.98},
+        {"speaker": "Speaker 1", "word": "there", "start": 0.5, "end": 0.9, "confidence": 0.97},
+    ])
+    words = repo.get_words(job.id)
+    assert [(w.word, w.start, w.end) for w in words] == [("Hello", 0.0, 0.4), ("there", 0.5, 0.9)]
+
+
 def test_increment_retry(db_session):
     repo = JobRepository(db_session)
     job = repo.create_job("test.mp3", "deepgram")
