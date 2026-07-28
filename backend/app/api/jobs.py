@@ -127,6 +127,22 @@ def get_job_audio(job_id: str, db: Session = Depends(get_db)):
     return RedirectResponse(url)
 
 
+@router.get("/{job_id}/playback-url")
+def get_job_playback_url(job_id: str, db: Session = Depends(get_db)):
+    """Return a browser-playable URL after authenticating the API request.
+
+    Native HTML media elements cannot add the desktop API-key header to their
+    own requests.  This additive endpoint lets the web UI authenticate once,
+    then receive either a same-origin local-media route or a short-lived S3/B2
+    URL that supports browser streaming and range seeking.
+    """
+    service = JobService(db)
+    job = service.get_job(job_id)
+    if not job or not job.file:
+        raise HTTPException(status_code=404, detail="Job or its audio file not found")
+    return {"url": get_storage().get_url(job.file.storage_key)}
+
+
 @router.get("/{job_id}/export")
 def export_job(job_id: str, format: str = "txt", db: Session = Depends(get_db)):
     """Export formats: txt | json | srt | vtt"""

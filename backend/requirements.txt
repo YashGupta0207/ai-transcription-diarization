@@ -1,5 +1,6 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
+websockets>=14.0,<16.0
 sqlalchemy==2.0.35
 alembic==1.13.2
 psycopg2-binary==2.9.9

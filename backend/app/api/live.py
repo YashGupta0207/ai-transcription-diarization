@@ -63,7 +63,11 @@ async def live_transcription(websocket: WebSocket, format: str = Query(default="
     try:
         async with ws_client.connect(
             build_deepgram_live_url(format),
-            extra_headers={"Authorization": f"Token {settings.DEEPGRAM_API_KEY}"},
+            # websockets 14+ renamed the legacy ``extra_headers`` argument.
+            # Pinning the supported range in requirements keeps this aligned
+            # with the installed client API instead of silently failing before
+            # a Deepgram connection is opened.
+            additional_headers={"Authorization": f"Token {settings.DEEPGRAM_API_KEY}"},
             ping_interval=5,
         ) as dg_ws:
 

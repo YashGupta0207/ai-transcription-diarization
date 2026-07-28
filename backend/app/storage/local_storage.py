@@ -31,5 +31,6 @@ class LocalStorage(StorageBackend):
             os.remove(path)
 
     def get_url(self, key: str, expires_in: int = 3600) -> str:
-        # For local dev, serve through the backend's own /files static route.
-        return f"{settings.BACKEND_BASE_URL}/files/{key}"
+        # A relative route keeps redirects and browser playback on the same
+        # host in local Docker and Render deployments alike.
+        return f"/files/{key}"

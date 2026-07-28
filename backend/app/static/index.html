@@ -602,6 +602,19 @@
       background: var(--accent);
       color: white;
     }
+
+    .playback-speaker-card {
+      border-left: 3px solid transparent;
+      border-radius: 5px;
+      margin: 8px 0;
+      padding: 2px 8px 6px;
+      transition: background-color 120ms ease, border-color 120ms ease;
+    }
+
+    .playback-speaker-card.active {
+      background: #5b8cff18;
+      border-left-color: var(--accent);
+    }
   </style>
 </head>
 
@@ -1105,6 +1118,7 @@
     // ================= Playback Verification (new, additive) =================
     let pbWords = [];
     let pbWordEls = [];
+    let pbWordCards = [];
     let pbActiveIndex = -1;
     let pbSuppressAutoScroll = false;
     let pbSuppressTimer = null;
@@ -1116,15 +1130,28 @@
       $('playbackOverlay').classList.add('show');
 
       const audio = $('playbackAudio');
-      audio.src = `${backendUrl}/jobs/${activeJobId}/audio`;
+      audio.pause();
+      audio.removeAttribute('src');
       audio.load();
 
       $('playbackTranscript').innerHTML = '<div class="empty-state">Loading word timestamps…</div>';
       try {
+        // <audio> cannot attach our X-API-Key header. Request a playable URL
+        // first, then let the media element stream it normally (including
+        // byte-range seeking) instead of loading a potentially huge Blob.
+        const audioResp = await fetch(`${backendUrl}/jobs/${activeJobId}/playback-url`, { headers: headers() });
+        if (!audioResp.ok) throw new Error(`Audio request failed (${audioResp.status})`);
+        const audioData = await audioResp.json();
+        if (!audioData.url) throw new Error('Audio URL was not returned');
+        audio.src = new URL(audioData.url, backendUrl).href;
+        audio.load();
+
         const resp = await fetch(`${backendUrl}/jobs/${activeJobId}/words`, { headers: headers() });
+        if (!resp.ok) throw new Error(`Transcript request failed (${resp.status})`);
         pbWords = await resp.json();
-      } catch {
+      } catch (e) {
         pbWords = [];
+        toast(`Playback unavailable: ${e.message}`);
       }
 
       if (!pbWords.length) {
@@ -1139,14 +1166,19 @@
       const container = $('playbackTranscript');
       container.innerHTML = '';
       pbWordEls = [];
+      pbWordCards = [];
       let currentSpeaker = null;
+      let currentCard = null;
 
       pbWords.forEach((w, idx) => {
         if (w.speaker !== currentSpeaker) {
+          currentCard = document.createElement('div');
+          currentCard.className = 'playback-speaker-card';
           const sp = document.createElement('span');
           sp.className = 'speaker';
           sp.textContent = w.speaker;
-          container.appendChild(sp);
+          currentCard.appendChild(sp);
+          container.appendChild(currentCard);
           currentSpeaker = w.speaker;
         }
         const span = document.createElement('span');
@@ -1157,8 +1189,9 @@
           audio.currentTime = w.start;
           audio.play();
         });
-        container.appendChild(span);
+        currentCard.appendChild(span);
         pbWordEls.push(span);
+        pbWordCards.push(currentCard);
       });
 
       container.addEventListener('wheel', markManualScroll);
@@ -1189,22 +1222,36 @@
       return ans;
     }
 
-    function pbTick() {
+    function syncPlaybackTranscript({ autoScroll = false } = {}) {
       const audio = $('playbackAudio');
-      if (!audio.paused && pbWords.length) {
+      if (pbWords.length) {
         const idx = findActiveWordIndex(audio.currentTime);
         if (idx !== pbActiveIndex) {
           if (pbActiveIndex >= 0 && pbWordEls[pbActiveIndex]) {
             pbWordEls[pbActiveIndex].classList.remove('active');
           }
+          if (idx < 0 && pbWordCards[pbActiveIndex]) {
+            pbWordCards[pbActiveIndex].classList.remove('active');
+          }
           if (idx >= 0 && pbWordEls[idx]) {
             pbWordEls[idx].classList.add('active');
-            if (!pbSuppressAutoScroll) {
+            if (pbWordCards[pbActiveIndex] && pbWordCards[pbActiveIndex] !== pbWordCards[idx]) {
+              pbWordCards[pbActiveIndex].classList.remove('active');
+            }
+            pbWordCards[idx]?.classList.add('active');
+            if (autoScroll && !pbSuppressAutoScroll) {
               pbWordEls[idx].scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
           }
           pbActiveIndex = idx;
         }
+      }
+    }
+
+    function pbTick() {
+      const audio = $('playbackAudio');
+      if (!audio.paused) {
+        syncPlaybackTranscript({ autoScroll: true });
       }
       requestAnimationFrame(pbTick);
     }
@@ -1217,6 +1264,19 @@
         $('pbSeek').value = audio.currentTime;
         $('pbTime').textContent = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration)}`;
       }
+      syncPlaybackTranscript({ autoScroll: !audio.paused });
+    });
+
+    $('playbackAudio').addEventListener('loadedmetadata', () => {
+      const audio = $('playbackAudio');
+      $('pbSeek').max = audio.duration || 0;
+      $('pbTime').textContent = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration)}`;
+      syncPlaybackTranscript();
+    });
+    $('playbackAudio').addEventListener('seeking', () => syncPlaybackTranscript({ autoScroll: true }));
+    $('playbackAudio').addEventListener('error', () => {
+      const audio = $('playbackAudio');
+      toast(`Audio playback error${audio.error ? ` (${audio.error.message || audio.error.code})` : ''}`);
     });
 
     function formatTime(s) {
@@ -1244,6 +1304,7 @@
     });
     $('pbSeek').addEventListener('input', () => {
       $('playbackAudio').currentTime = parseFloat($('pbSeek').value);
+      syncPlaybackTranscript({ autoScroll: true });
     });
     $('pbSpeed').addEventListener('change', () => {
       $('playbackAudio').playbackRate = parseFloat($('pbSpeed').value);
@@ -1255,6 +1316,8 @@
     $('closePlaybackBtn').addEventListener('click', () => {
       const audio = $('playbackAudio');
       audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
       $('playbackOverlay').classList.remove('show');
     });
   </script>
