@@ -1,13 +1,19 @@
 """
 WebSocket endpoint for Live Transcription mode.
 
-Proxies browser microphone audio to Deepgram's real-time streaming API and
-relays partial/final transcript events back to the browser as they arrive.
-When the session stops, the finalized words/utterances are saved through the
-EXACT SAME JobRepository used by file uploads - so a live session becomes a
-normal completed Job, appears in the regular job list, and supports every
-existing export format (txt/json/srt/vtt) automatically, with zero special
-casing anywhere else in the app.
+Proxies microphone audio to Deepgram's real-time streaming API and relays
+partial/final transcript events back to the client as they arrive. When the
+session stops, the finalized words/utterances are saved through the EXACT
+SAME JobRepository used by file uploads - so a live session becomes a normal
+completed Job, appears in the regular job list, and supports every existing
+export format (txt/json/srt/vtt) automatically, with zero special casing
+anywhere else in the app.
+
+Supports two audio sources via a query parameter, since browsers and desktop
+clients send different raw formats:
+  - ?format=webm  (default) - browser MediaRecorder output (audio/webm;opus)
+  - ?format=linear16        - raw 16-bit PCM, e.g. from the desktop app's
+                              microphone capture (sounddevice), 16kHz mono
 
 This file is entirely additive: it does not import from or modify jobs.py,
 job_service.py, or the RQ queue in any way.
@@ -17,7 +23,7 @@ import asyncio
 from datetime import datetime
 
 import websockets as ws_client
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -31,14 +37,19 @@ logger = setup_logging("live")
 
 router = APIRouter(tags=["live"])
 
-DEEPGRAM_LIVE_URL = (
-    "wss://api.deepgram.com/v1/listen"
-    "?punctuate=true&diarize=true&interim_results=true&smart_format=true&model=nova-2"
-)
+
+def build_deepgram_live_url(audio_format: str) -> str:
+    base = (
+        "wss://api.deepgram.com/v1/listen"
+        "?punctuate=true&diarize=true&interim_results=true&smart_format=true&model=nova-2"
+    )
+    if audio_format == "linear16":
+        base += "&encoding=linear16&sample_rate=16000&channels=1"
+    return base
 
 
 @router.websocket("/ws/live")
-async def live_transcription(websocket: WebSocket):
+async def live_transcription(websocket: WebSocket, format: str = Query(default="webm")):
     await websocket.accept()
 
     if not settings.DEEPGRAM_API_KEY:
@@ -46,20 +57,17 @@ async def live_transcription(websocket: WebSocket):
         await websocket.close()
         return
 
-    # Accumulates finalized words/utterances as they stream in, so a normal
-    # Job/Segment/TranscriptWord record can be saved once recording stops.
     collected_words = []
     collected_segments = []
 
     try:
         async with ws_client.connect(
-            DEEPGRAM_LIVE_URL,
+            build_deepgram_live_url(format),
             extra_headers={"Authorization": f"Token {settings.DEEPGRAM_API_KEY}"},
             ping_interval=5,
         ) as dg_ws:
 
             async def forward_audio_to_deepgram():
-                """Relays raw audio bytes from the browser straight through to Deepgram."""
                 try:
                     while True:
                         message = await websocket.receive()
@@ -77,8 +85,6 @@ async def live_transcription(websocket: WebSocket):
                     logger.warning(f"Live audio forwarding stopped: {e}")
 
             async def relay_deepgram_results():
-                """Relays Deepgram's transcript events back to the browser in real
-                time, and keeps a running record of finalized text for saving later."""
                 try:
                     async for raw in dg_ws:
                         data = json.loads(raw)
@@ -134,7 +140,6 @@ async def live_transcription(websocket: WebSocket):
         except Exception:
             pass
 
-    # Save whatever was collected as a normal completed Job.
     db: Session = SessionLocal()
     try:
         repo = JobRepository(db)
