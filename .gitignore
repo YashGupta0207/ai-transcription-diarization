@@ -4,3 +4,8 @@ __pycache__/
 *.db
 storage_data/
 .venv/
+venv/
+desktop/venv/
+desktop/build/
+desktop/dist/
+*.spec
