@@ -1,10 +1,10 @@
-"""Data-access layer for Job/MediaFile/Segment/Speaker. Keeps SQLAlchemy queries out of routes."""
+"""Data-access layer for Job/MediaFile/Segment/Speaker/TranscriptWord. Keeps SQLAlchemy queries out of routes."""
 from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.job import Job, JobStatus, MediaFile, Segment, Speaker
+from app.models.job import Job, JobStatus, MediaFile, Segment, Speaker, TranscriptWord
 
 
 class JobRepository:
@@ -67,7 +67,8 @@ class JobRepository:
         self.db.refresh(job)
         return job
 
-    def save_results(self, job: Job, segments: List[dict], readable_transcript: str, raw_json: dict):
+    def save_results(self, job: Job, segments: List[dict], readable_transcript: str, raw_json: dict,
+                      words: Optional[List[dict]] = None):
         # Clear any previous partial segments (retry scenario)
         self.db.query(Segment).filter(Segment.job_id == job.id).delete()
 
@@ -88,6 +89,21 @@ class JobRepository:
         for label in speakers_seen:
             self.db.add(Speaker(job_id=job.id, label=label))
 
+        # Word-level timestamps for Playback Verification - additive, does
+        # not affect segments/speakers/readable_transcript above in any way.
+        self.db.query(TranscriptWord).filter(TranscriptWord.job_id == job.id).delete()
+        if words:
+            for idx, w in enumerate(words):
+                self.db.add(TranscriptWord(
+                    job_id=job.id,
+                    speaker_label=w["speaker"],
+                    word=w["word"],
+                    start=w["start"],
+                    end=w["end"],
+                    confidence=w.get("confidence"),
+                    order_index=idx,
+                ))
+
         job.readable_transcript = readable_transcript
         job.raw_provider_json = raw_json
         job.updated_at = datetime.utcnow()
@@ -104,6 +120,14 @@ class JobRepository:
             self.db.query(Segment)
             .filter(Segment.job_id == job_id)
             .order_by(Segment.order_index.asc())
+            .all()
+        )
+
+    def get_words(self, job_id: str) -> List[TranscriptWord]:
+        return (
+            self.db.query(TranscriptWord)
+            .filter(TranscriptWord.job_id == job_id)
+            .order_by(TranscriptWord.order_index.asc())
             .all()
         )
 

@@ -2,16 +2,17 @@
 import os
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.api.deps import verify_api_key
 from app.services.job_service import JobService
 from app.schemas.job import (
-    JobCreateResponse, JobStatusResponse, JobResultResponse, JobListResponse, SegmentOut
+    JobCreateResponse, JobStatusResponse, JobResultResponse, JobListResponse, SegmentOut, WordOut
 )
 from app.utils.media import segments_to_srt, segments_to_vtt, segments_to_readable
+from app.storage.factory import get_storage
 
 router = APIRouter(prefix="/jobs", tags=["jobs"], dependencies=[Depends(verify_api_key)])
 upload_router = APIRouter(tags=["upload"], dependencies=[Depends(verify_api_key)])
@@ -85,6 +86,45 @@ def get_job_result(job_id: str, db: Session = Depends(get_db)):
             for s in segments
         ],
     )
+
+
+@router.get("/{job_id}/words", response_model=list[WordOut])
+def get_job_words(job_id: str, db: Session = Depends(get_db)):
+    """
+    Word-level timestamps for the Playback Verification feature. Returns an
+    empty list for jobs processed before this feature existed, or for any
+    provider that didn't supply word-level timing - the playback UI handles
+    that gracefully by showing a message instead of crashing.
+    """
+    service = JobService(db)
+    job = service.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    words = service.repo.get_words(job_id)
+    return [
+        WordOut(speaker=w.speaker_label, word=w.word, start=w.start, end=w.end, confidence=w.confidence)
+        for w in words
+    ]
+
+
+@router.get("/{job_id}/audio")
+def get_job_audio(job_id: str, db: Session = Depends(get_db)):
+    """
+    Redirects to a playable URL for the job's original audio/video file, used
+    by the Playback Verification feature's <audio> element. Works transparently
+    whether storage is local (redirects to the /files static mount) or S3/B2
+    (redirects to a signed temporary URL) - the frontend never needs to know
+    which storage backend is active.
+    """
+    service = JobService(db)
+    job = service.get_job(job_id)
+    if not job or not job.file:
+        raise HTTPException(status_code=404, detail="Job or its audio file not found")
+
+    storage = get_storage()
+    url = storage.get_url(job.file.storage_key)
+    return RedirectResponse(url)
 
 
 @router.get("/{job_id}/export")

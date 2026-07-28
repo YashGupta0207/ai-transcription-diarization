@@ -7,7 +7,10 @@ authenticate with our own backend.
 import os
 import requests
 
-BACKEND_BASE_URL = os.environ.get("BACKEND_BASE_URL", "http://localhost:8000")
+# Hardcoded so the packaged .exe works standalone for any user, with no
+# environment variables required. Update these two values if the backend
+# URL or API key ever changes, then rebuild the .exe.
+BACKEND_BASE_URL = os.environ.get("BACKEND_BASE_URL", "https://ai-transcription-diarization.onrender.com")
 DESKTOP_API_KEY = os.environ.get("DESKTOP_API_KEY", "dev-desktop-key-change-me")
 
 

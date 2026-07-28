@@ -19,6 +19,20 @@ class SegmentOut(BaseModel):
         from_attributes = True
 
 
+class WordOut(BaseModel):
+    """Used only by the Playback Verification feature (GET /jobs/{id}/words).
+    Does not touch JobResultResponse below, so existing clients calling
+    /jobs/{id}/result are completely unaffected."""
+    speaker: str
+    word: str
+    start: float
+    end: float
+    confidence: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
 class JobStatusResponse(BaseModel):
     id: str
     status: str

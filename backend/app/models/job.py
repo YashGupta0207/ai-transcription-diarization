@@ -1,7 +1,10 @@
 """
-Core database models: Job, File, Speaker, Segment.
+Core database models: Job, File, Speaker, Segment, TranscriptWord.
 Transcript text is denormalized into Segment rows for query flexibility,
 and a convenience `full_text` / `raw_provider_json` is kept on Job for fast retrieval.
+
+TranscriptWord is an additive table (does not alter any existing table) used
+by the Playback Verification feature for word-level highlight synchronization.
 """
 import enum
 import uuid
@@ -57,6 +60,7 @@ class Job(Base):
     file = relationship("MediaFile", back_populates="job", uselist=False)
     segments = relationship("Segment", back_populates="job", cascade="all, delete-orphan")
     speakers = relationship("Speaker", back_populates="job", cascade="all, delete-orphan")
+    words = relationship("TranscriptWord", back_populates="job", cascade="all, delete-orphan")
 
     def to_dict(self):
         return {
@@ -113,3 +117,24 @@ class Segment(Base):
     order_index = Column(Integer, nullable=False, default=0)
 
     job = relationship("Job", back_populates="segments")
+
+
+class TranscriptWord(Base):
+    """
+    Word-level timestamps, additive table used only by the Playback
+    Verification feature (highlight-as-you-play, click-to-seek). Does not
+    affect Segment/Speaker/Job in any way - existing transcript rendering
+    and exports are completely unaffected by this table's existence.
+    """
+    __tablename__ = "transcript_words"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    job_id = Column(String, ForeignKey("jobs.id"), nullable=False, index=True)
+    speaker_label = Column(String, nullable=False)
+    word = Column(String, nullable=False)
+    start = Column(Float, nullable=False)
+    end = Column(Float, nullable=False)
+    confidence = Column(Float, nullable=True)
+    order_index = Column(Integer, nullable=False, default=0)
+
+    job = relationship("Job", back_populates="words")

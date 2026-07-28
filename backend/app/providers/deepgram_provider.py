@@ -10,7 +10,7 @@ Why Deepgram is the default:
 """
 import requests
 
-from app.providers.base import SpeechProvider, TranscriptionResult, TranscriptSegment
+from app.providers.base import SpeechProvider, TranscriptionResult, TranscriptSegment, WordTimestamp
 from app.config import settings
 
 
@@ -40,17 +40,32 @@ class DeepgramProvider(SpeechProvider):
         data = resp.json()
 
         segments = []
+        words = []
         utterances = data.get("results", {}).get("utterances", [])
         for i, utt in enumerate(utterances):
             speaker_idx = utt.get("speaker", 0)
+            speaker_label = f"Speaker {speaker_idx + 1}"
             segments.append(
                 TranscriptSegment(
-                    speaker=f"Speaker {speaker_idx + 1}",
+                    speaker=speaker_label,
                     start=utt.get("start", 0.0),
                     end=utt.get("end", 0.0),
                     text=utt.get("transcript", "").strip(),
                     confidence=utt.get("confidence"),
                 )
             )
+            # Word-level timing, used by the Playback Verification feature.
+            # Additive only - existing transcript/segment behavior above is
+            # completely unchanged.
+            for w in utt.get("words", []):
+                words.append(
+                    WordTimestamp(
+                        speaker=speaker_label,
+                        word=(w.get("punctuated_word") or w.get("word", "")),
+                        start=w.get("start", 0.0),
+                        end=w.get("end", 0.0),
+                        confidence=w.get("confidence"),
+                    )
+                )
 
-        return TranscriptionResult(segments=segments, raw_response=data, language=language)
+        return TranscriptionResult(segments=segments, raw_response=data, language=language, words=words)

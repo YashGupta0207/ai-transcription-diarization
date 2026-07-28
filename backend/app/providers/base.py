@@ -11,7 +11,7 @@ To add a new provider:
 Nothing else in the codebase changes.
 """
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 
@@ -25,10 +25,26 @@ class TranscriptSegment:
 
 
 @dataclass
+class WordTimestamp:
+    """
+    Word-level timing, used by the Playback Verification feature to
+    highlight the exact word being spoken as audio plays. Optional/additive:
+    providers that can't supply word-level timing simply return an empty
+    list here, and everything else keeps working exactly as before.
+    """
+    speaker: str
+    word: str
+    start: float
+    end: float
+    confidence: Optional[float] = None
+
+
+@dataclass
 class TranscriptionResult:
     segments: List[TranscriptSegment]
     raw_response: dict
     language: str = "en"
+    words: List[WordTimestamp] = field(default_factory=list)
 
 
 class SpeechProvider(ABC):

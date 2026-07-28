@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import init_db
-from app.api import jobs, health
+from app.api import jobs, health, live
 from app.utils.logging_config import setup_logging
 
 logger = setup_logging("backend")
@@ -82,6 +82,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(jobs.upload_router)
 app.include_router(jobs.router)
+app.include_router(live.router)
 
 if settings.STORAGE_BACKEND == "local":
     os.makedirs(settings.LOCAL_STORAGE_DIR, exist_ok=True)

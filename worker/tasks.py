@@ -18,11 +18,6 @@ import sys
 import time
 import tempfile
 
-# Allow running this worker with backend/app on the path when deployed as a
-# separate service that shares the `app` package via the `shared` mechanism.
-# Also ensure the project root (parent of this file's directory) is importable
-# so `worker.tasks.*` resolves correctly regardless of how the process was
-# launched (plain script, `-m`, or from inside Docker's WORKDIR).
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.join(_THIS_DIR, "..")
 sys.path.insert(0, os.path.join(_THIS_DIR, "..", "backend"))
@@ -94,9 +89,19 @@ def process_transcription_job(job_id: str):
             }
             for s in result.segments
         ]
+        word_dicts = [
+            {
+                "speaker": w.speaker,
+                "word": w.word,
+                "start": w.start,
+                "end": w.end,
+                "confidence": w.confidence,
+            }
+            for w in getattr(result, "words", [])
+        ]
         readable = segments_to_readable(seg_dicts)
 
-        repo.save_results(job, seg_dicts, readable, result.raw_response)
+        repo.save_results(job, seg_dicts, readable, result.raw_response, words=word_dicts)
         repo.set_status(job, JobStatus.COMPLETED)
         logger.info(f"Job {job_id}: completed successfully")
 
