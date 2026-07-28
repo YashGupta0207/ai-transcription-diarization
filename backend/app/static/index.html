@@ -1095,12 +1095,20 @@
     $('liveStopBtn').addEventListener('click', stopLiveRecording);
 
     function stopLiveRecording() {
+      const finalizeSocket = () => {
+        if (liveWs && liveWs.readyState === WebSocket.OPEN) {
+          // MediaRecorder emits its final dataavailable event before onstop,
+          // so the backend receives every stored playback chunk before the
+          // Deepgram stream is closed.
+          liveWs.send('stop');
+        }
+      };
       if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.onstop = finalizeSocket;
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach(t => t.stop());
-      }
-      if (liveWs && liveWs.readyState === WebSocket.OPEN) {
-        liveWs.send('stop');
+      } else {
+        finalizeSocket();
       }
       setLiveStatus('Finalizing…', '');
       liveState = 'idle';

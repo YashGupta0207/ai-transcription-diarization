@@ -20,6 +20,9 @@ job_service.py, or the RQ queue in any way.
 """
 import json
 import asyncio
+import tempfile
+import uuid
+import wave
 from datetime import datetime
 
 import websockets as ws_client
@@ -30,6 +33,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.repositories.job_repository import JobRepository
 from app.models.job import JobStatus
+from app.storage.factory import get_storage
 from app.utils.media import segments_to_readable
 from app.utils.logging_config import setup_logging
 
@@ -59,6 +63,10 @@ async def live_transcription(websocket: WebSocket, format: str = Query(default="
 
     collected_words = []
     collected_segments = []
+    # Keep the browser's WebM (or desktop linear PCM) until Deepgram finalizes
+    # the session. SpooledTemporaryFile avoids retaining long recordings only
+    # in RAM while still presenting the normal BinaryIO interface to storage.
+    recorded_audio = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
 
     try:
         async with ws_client.connect(
@@ -78,7 +86,9 @@ async def live_transcription(websocket: WebSocket, format: str = Query(default="
                         if message.get("type") == "websocket.disconnect":
                             break
                         if message.get("bytes") is not None:
-                            await dg_ws.send(message["bytes"])
+                            chunk = message["bytes"]
+                            recorded_audio.write(chunk)
+                            await dg_ws.send(chunk)
                         elif message.get("text") is not None:
                             if message["text"] == "stop":
                                 await dg_ws.send(json.dumps({"type": "CloseStream"}))
@@ -145,11 +155,22 @@ async def live_transcription(websocket: WebSocket, format: str = Query(default="
             pass
 
     db: Session = SessionLocal()
+    persisted_audio = None
     try:
         repo = JobRepository(db)
         if collected_segments:
-            filename = f"Live Recording {datetime.utcnow().strftime('%Y-%m-%d %H-%M-%S')}"
+            storage = get_storage()
+            timestamp = datetime.utcnow().strftime("%Y-%m-%d %H-%M-%S")
+            audio_file, suffix, content_type = _finalize_live_audio(recorded_audio, format)
+            persisted_audio = audio_file
+            size_bytes = audio_file.seek(0, 2)
+            audio_file.seek(0)
+
+            filename = f"Live Recording {timestamp}{suffix}"
             job = repo.create_job(original_filename=filename, provider="deepgram-live")
+            storage_key = f"uploads/{job.id}/{uuid.uuid4().hex}{suffix}"
+            storage.save(storage_key, audio_file)
+            repo.attach_file(job, storage_key, settings.STORAGE_BACKEND, content_type, size_bytes)
             repo.set_status(job, JobStatus.PROCESSING)
             readable = segments_to_readable(collected_segments)
             repo.save_results(job, collected_segments, readable, {"live": True}, words=collected_words)
@@ -161,8 +182,30 @@ async def live_transcription(websocket: WebSocket, format: str = Query(default="
         logger.error(f"Failed to save live transcription job: {e}")
     finally:
         db.close()
+        if persisted_audio is not None and persisted_audio is not recorded_audio:
+            persisted_audio.close()
+        recorded_audio.close()
 
     try:
         await websocket.close()
     except Exception:
         pass
+
+
+def _finalize_live_audio(recorded_audio, audio_format: str):
+    """Return a playable persisted stream for either supported live client."""
+    recorded_audio.seek(0)
+    if audio_format != "linear16":
+        return recorded_audio, ".webm", "audio/webm"
+
+    # The PySide client sends raw 16-bit PCM. Wrap it in a WAV container so
+    # its saved conversation uses exactly the same playback pipeline as
+    # uploaded audio files.
+    wav_file = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
+    with wave.open(wav_file, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(recorded_audio.read())
+    wav_file.seek(0)
+    return wav_file, ".wav", "audio/wav"

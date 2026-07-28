@@ -68,11 +68,6 @@ class LiveTranscriber(QObject):
                 self._stream.close()
             except Exception:
                 pass
-        if self._ws:
-            try:
-                self._ws.send("stop")
-            except Exception:
-                pass
 
     def _audio_callback(self, indata, frames, time_info, status):
         if self._recording and not self._paused:
@@ -133,3 +128,10 @@ class LiveTranscriber(QObject):
                 continue
             except Exception:
                 break
+        # Send CloseStream only after every queued microphone chunk has been
+        # delivered, so the backend can persist a complete playback file.
+        if self._ws:
+            try:
+                self._ws.send("stop")
+            except Exception:
+                pass
