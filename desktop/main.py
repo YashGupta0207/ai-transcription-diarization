@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from client import BackendClient
 from live_transcriber import LiveTranscriber
 from transcript_sync import active_word_index, format_timestamp
+from async_worker import run_in_background
 
 POLL_INTERVAL_MS = 4000
 
@@ -43,6 +44,8 @@ class MainWindow(QMainWindow):
 
         self.client = BackendClient()
         self.jobs_by_row = {}
+        self._refresh_in_flight = False
+        self._result_request_id = 0
 
         root = QWidget()
         layout = QHBoxLayout(root)
@@ -114,18 +117,31 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        try:
-            result = self.client.upload_file(path)
-            QMessageBox.information(self, "Uploaded", f"Job queued: {result['job_id']}")
-            self.refresh_jobs()
-        except Exception as e:
-            QMessageBox.critical(self, "Upload failed", str(e))
+        self.upload_btn.setEnabled(False)
+        self.status_label.setText("Uploading in the background…")
+        signals = run_in_background(self.client.upload_file, path)
+        signals.result.connect(self._on_upload_complete)
+        signals.error.connect(lambda error: QMessageBox.critical(self, "Upload failed", error))
+        signals.finished.connect(lambda: self.upload_btn.setEnabled(True))
+
+    def _on_upload_complete(self, result):
+        QMessageBox.information(self, "Uploaded", f"Job queued: {result['job_id']}")
+        self.refresh_jobs()
 
     def refresh_jobs(self):
-        try:
-            data = self.client.list_jobs()
-        except Exception:
+        # Do not queue overlapping polls while an earlier request is still in
+        # flight; a slow network must never block Qt's event loop.
+        if self._refresh_in_flight:
             return
+        self._refresh_in_flight = True
+        signals = run_in_background(self.client.list_jobs)
+        signals.result.connect(self._apply_job_list)
+        signals.finished.connect(self._finish_refresh)
+
+    def _finish_refresh(self):
+        self._refresh_in_flight = False
+
+    def _apply_job_list(self, data):
 
         self.job_list.blockSignals(True)
         current_row = self.job_list.currentRow()
@@ -156,53 +172,66 @@ class MainWindow(QMainWindow):
         )
         self.playback_btn.setEnabled(job["status"] == "completed")
         if job["status"] == "completed":
-            try:
-                result = self.client.get_result(job["id"])
-                self.transcript_view.setPlainText(result.get("readable_transcript") or "(empty transcript)")
-            except Exception as e:
-                self.transcript_view.setPlainText(f"Error loading transcript: {e}")
+            self._result_request_id += 1
+            request_id = self._result_request_id
+            self.transcript_view.setPlainText("Loading transcript…")
+            signals = run_in_background(self.client.get_result, job["id"])
+            signals.result.connect(lambda result: self._show_transcript(request_id, result))
+            signals.error.connect(lambda error: self._show_transcript_error(request_id, error))
         elif job["status"] == "failed":
             self.transcript_view.setPlainText(f"Job failed: {job.get('error_message', 'unknown error')}")
         else:
             self.transcript_view.setPlainText("Processing on the server - this window can be closed safely.")
 
+    def _show_transcript(self, request_id, result):
+        if request_id == self._result_request_id:
+            self.transcript_view.setPlainText(result.get("readable_transcript") or "(empty transcript)")
+
+    def _show_transcript_error(self, request_id, error):
+        if request_id == self._result_request_id:
+            self.transcript_view.setPlainText(f"Error loading transcript: {error}")
+
     def on_cancel(self):
         job_id = self.current_job_id()
         if not job_id:
             return
-        try:
-            self.client.cancel(job_id)
-            self.refresh_jobs()
-        except Exception as e:
-            QMessageBox.critical(self, "Cancel failed", str(e))
+        self.cancel_btn.setEnabled(False)
+        signals = run_in_background(self.client.cancel, job_id)
+        signals.result.connect(lambda _result: self.refresh_jobs())
+        signals.error.connect(lambda error: QMessageBox.critical(self, "Cancel failed", error))
+        signals.finished.connect(lambda: self.cancel_btn.setEnabled(True))
 
     def on_delete(self):
         job_id = self.current_job_id()
         if not job_id:
             return
-        try:
-            self.client.delete(job_id)
-            self.refresh_jobs()
-            self.transcript_view.clear()
-        except Exception as e:
-            QMessageBox.critical(self, "Delete failed", str(e))
+        self.delete_btn.setEnabled(False)
+        signals = run_in_background(self.client.delete, job_id)
+        signals.result.connect(self._on_delete_complete)
+        signals.error.connect(lambda error: QMessageBox.critical(self, "Delete failed", error))
+        signals.finished.connect(lambda: self.delete_btn.setEnabled(True))
+
+    def _on_delete_complete(self, _result):
+        self.refresh_jobs()
+        self.transcript_view.clear()
 
     def on_export(self):
         job_id = self.current_job_id()
         if not job_id:
             return
         fmt = self.export_format.currentText()
-        try:
-            content = self.client.export(job_id, fmt)
-        except Exception as e:
-            QMessageBox.critical(self, "Export failed", str(e))
-            return
-
         save_path, _ = QFileDialog.getSaveFileName(self, "Save export", f"transcript.{fmt}")
         if save_path:
-            with open(save_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            QMessageBox.information(self, "Saved", f"Exported to {save_path}")
+            self.export_btn.setEnabled(False)
+            signals = run_in_background(self._export_to_file, job_id, fmt, save_path)
+            signals.result.connect(lambda _result: QMessageBox.information(self, "Saved", f"Exported to {save_path}"))
+            signals.error.connect(lambda error: QMessageBox.critical(self, "Export failed", error))
+            signals.finished.connect(lambda: self.export_btn.setEnabled(True))
+
+    def _export_to_file(self, job_id, fmt, save_path):
+        content = self.client.export(job_id, fmt)
+        with open(save_path, "w", encoding="utf-8") as output:
+            output.write(content)
 
     # ---------------- New: Live Transcription ----------------
 
@@ -256,6 +285,10 @@ class LiveTranscriptionDialog(QDialog):
 
         self._current_speaker = None
         self._paused = False
+        self._pending_transcript_events = []
+        self._transcript_flush_timer = QTimer(self)
+        self._transcript_flush_timer.setSingleShot(True)
+        self._transcript_flush_timer.timeout.connect(self._flush_transcript_events)
 
     def on_start(self):
         try:
@@ -296,10 +329,22 @@ class LiveTranscriptionDialog(QDialog):
     def on_transcript(self, data: dict):
         if not data.get("is_final"):
             return
-        if data["speaker"] != self._current_speaker:
-            self.transcript_view.append(f"\n{data['speaker']}\n")
-            self._current_speaker = data["speaker"]
-        self.transcript_view.insertPlainText(data["text"] + " ")
+        # Signals are delivered on Qt's GUI thread.  Coalescing short bursts
+        # prevents a document relayout for every finalized utterance.
+        self._pending_transcript_events.append(data)
+        if not self._transcript_flush_timer.isActive():
+            self._transcript_flush_timer.start(100)
+
+    def _flush_transcript_events(self):
+        parts = []
+        for data in self._pending_transcript_events:
+            if data["speaker"] != self._current_speaker:
+                parts.append(f"\n{data['speaker']}\n")
+                self._current_speaker = data["speaker"]
+            parts.append(data["text"] + " ")
+        self._pending_transcript_events.clear()
+        if parts:
+            self.transcript_view.insertPlainText("".join(parts))
 
     def on_saved(self, job_id):
         if job_id:
@@ -327,6 +372,7 @@ class SpeakerCard(QFrame):
     def __init__(self, speaker: str, words: list, on_word_click, parent=None):
         super().__init__(parent)
         self.words = words  # list of dicts: {"word","start","end", global_index}
+        self._word_indexes = {word["global_index"] for word in words}
         self.on_word_click = on_word_click
         self.word_labels = []
 
@@ -397,7 +443,7 @@ class SpeakerCard(QFrame):
     def set_active_word(self, global_index: int) -> bool:
         """Returns True if this card contains the active word (used by the
         parent dialog to know when to auto-scroll to this card)."""
-        contains = any(w["global_index"] == global_index for w in self.words)
+        contains = global_index in self._word_indexes
         if self.active_global_index != global_index:
             self.active_global_index = global_index if contains else -1
             self.render_html()
@@ -415,11 +461,20 @@ class PlaybackDialog(QDialog):
         self.client = client
         self.job_id = job_id
         self.words = []
+        self.word_starts = []
         self.cards = []
         self.card_by_word_index = {}
         self.active_card = None
         self.active_index = -1
         self._temp_audio_path = None
+        self._pending_card_groups = []
+        self._search_card_index = 0
+        self._search_term = ""
+        self._card_build_timer = QTimer(self)
+        self._card_build_timer.timeout.connect(self._build_next_card_batch)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.timeout.connect(self._apply_search_batch)
 
         layout = QVBoxLayout(self)
 
@@ -491,14 +546,36 @@ class PlaybackDialog(QDialog):
         self._load_audio_and_words()
 
     def _load_audio_and_words(self):
+        self.playback_info.setText("Loading transcript and audio…")
+        signals = run_in_background(self._fetch_playback_data)
+        signals.result.connect(self._apply_playback_data)
+        signals.error.connect(lambda error: QMessageBox.warning(self, "Playback unavailable", error))
+
+    def _fetch_playback_data(self):
         try:
             raw_words = self.client.get_words(self.job_id)
         except Exception:
             raw_words = []
-
-        # API data is persisted timestamp data, but a malformed legacy
-        # record must not make the verifier unusable.
         raw_words = [w for w in raw_words if self._is_valid_word(w)]
+        raw_words.sort(key=lambda word: float(word["start"]))
+        for idx, word in enumerate(raw_words):
+            word["global_index"] = idx
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".audio")
+        tmp.close()
+        try:
+            self.client.download_audio(self.job_id, tmp.name)
+        except Exception:
+            try:
+                os.remove(tmp.name)
+            except OSError:
+                pass
+            raise
+        return raw_words, tmp.name
+
+    def _apply_playback_data(self, payload):
+        raw_words, audio_path = payload
+        self._temp_audio_path = audio_path
 
         if not raw_words:
             empty = QLabel(
@@ -509,42 +586,40 @@ class PlaybackDialog(QDialog):
             empty.setStyleSheet("color:#8b93a3; padding: 20px;")
             self.cards_layout.insertWidget(0, empty)
         else:
-            raw_words.sort(key=lambda word: float(word["start"]))
-            for idx, w in enumerate(raw_words):
-                w["global_index"] = idx
             self.words = raw_words
-            self._build_cards()
+            self.word_starts = [float(word["start"]) for word in self.words]
+            self._prepare_card_groups()
 
-        try:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".audio")
-            tmp.close()
-            self._temp_audio_path = tmp.name
-            self.client.download_audio(self.job_id, self._temp_audio_path)
-            self.player.setSource(QUrl.fromLocalFile(self._temp_audio_path))
-        except Exception as e:
-            QMessageBox.warning(self, "Audio unavailable", f"Could not load audio: {e}")
+        self.player.setSource(QUrl.fromLocalFile(self._temp_audio_path))
+        self.playback_info.setText("Speaker: —  |  Word: —")
 
-    def _build_cards(self):
-        """Groups consecutive same-speaker words into one card each, matching
-        the reference design's one-card-per-speaker-turn layout."""
+    def _prepare_card_groups(self):
+        """Group words once, then create a bounded number of widgets per tick."""
         current_speaker = None
         current_group = []
-
-        def flush():
-            if current_group:
-                card = SpeakerCard(current_speaker, current_group, self.on_word_clicked)
-                self.cards.append(card)
-                for word in current_group:
-                    self.card_by_word_index[word["global_index"]] = card
-                self.cards_layout.insertWidget(self.cards_layout.count() - 1, card)
-
         for w in self.words:
             if w["speaker"] != current_speaker:
-                flush()
+                if current_group:
+                    self._pending_card_groups.append((current_speaker, current_group))
                 current_speaker = w["speaker"]
                 current_group = []
             current_group.append(w)
-        flush()
+        if current_group:
+            self._pending_card_groups.append((current_speaker, current_group))
+        self._card_build_timer.start(0)
+
+    def _build_next_card_batch(self):
+        # 20 cards bounds one event-loop turn, retaining speaker-card UX while
+        # keeping scrolling, painting, and window messages responsive.
+        for _ in range(min(20, len(self._pending_card_groups))):
+            speaker, words = self._pending_card_groups.pop(0)
+            card = SpeakerCard(speaker, words, self.on_word_clicked)
+            self.cards.append(card)
+            for word in words:
+                self.card_by_word_index[word["global_index"]] = card
+            self.cards_layout.insertWidget(self.cards_layout.count() - 1, card)
+        if not self._pending_card_groups:
+            self._card_build_timer.stop()
 
     def on_word_clicked(self, global_index: int):
         start_ms = int(self.words[global_index]["start"] * 1000)
@@ -552,8 +627,17 @@ class PlaybackDialog(QDialog):
         self.player.play()
 
     def on_search_changed(self, term: str):
-        for card in self.cards:
-            card.set_search_term(term)
+        self._search_term = term
+        self._search_card_index = 0
+        self._search_timer.start(150)
+
+    def _apply_search_batch(self):
+        end = min(self._search_card_index + 20, len(self.cards))
+        for card in self.cards[self._search_card_index:end]:
+            card.set_search_term(self._search_term)
+        self._search_card_index = end
+        if self._search_card_index < len(self.cards):
+            self._search_timer.start(0)
 
     def on_play_pause(self):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
@@ -609,7 +693,7 @@ class PlaybackDialog(QDialog):
                 self.playback_info.setText("Speaker: —  |  Word: —")
 
     def _find_active_word(self, t: float) -> int:
-        return active_word_index(self.words, t)
+        return active_word_index(self.words, t, self.word_starts)
 
     @staticmethod
     def _is_valid_word(word: dict) -> bool:

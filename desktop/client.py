@@ -60,10 +60,15 @@ class BackendClient:
         because that endpoint requires an X-API-Key header, which QMediaPlayer
         has no way to attach to its network requests.
         """
-        resp = requests.get(f"{self.base_url}/jobs/{job_id}/audio", headers=self.headers, timeout=120)
-        resp.raise_for_status()
-        with open(dest_path, "wb") as f:
-            f.write(resp.content)
+        # Streaming avoids keeping an entire multi-hour recording in memory.
+        with requests.get(
+            f"{self.base_url}/jobs/{job_id}/audio", headers=self.headers, timeout=120, stream=True
+        ) as resp:
+            resp.raise_for_status()
+            with open(dest_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
         return dest_path
 
     def export(self, job_id: str, fmt: str) -> str:

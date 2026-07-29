@@ -2,7 +2,7 @@
 from bisect import bisect_right
 
 
-def active_word_index(words: list[dict], seconds: float) -> int:
+def active_word_index(words: list[dict], seconds: float, starts: list[float] | None = None) -> int:
     """Return the latest word that has started at ``seconds``.
 
     The list is supplied by the API in timestamp order.  Keeping the lookup
@@ -10,7 +10,11 @@ def active_word_index(words: list[dict], seconds: float) -> int:
     """
     if not words:
         return -1
-    starts = [float(word.get("start", 0.0)) for word in words]
+    # This function runs for every QMediaPlayer position update.  Callers with
+    # a persistent transcript pass the precomputed list so playback remains
+    # O(log n), rather than allocating and scanning every word on every tick.
+    if starts is None:
+        starts = [float(word.get("start", 0.0)) for word in words]
     return bisect_right(starts, seconds) - 1
 
 
