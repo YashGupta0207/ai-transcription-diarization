@@ -37,6 +37,7 @@ from transcript_sync import active_word_index, format_timestamp
 from async_worker import run_in_background
 
 POLL_INTERVAL_MS = 4000
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi"}
 
 
 class MainWindow(QMainWindow):
@@ -541,6 +542,7 @@ class PlaybackDialog(QDialog):
         self.resize(760, 620)
         self.client = client
         self.job_id = job_id
+        self.filename = filename
         self.words = []
         self.word_starts = []
         self.cards = []
@@ -648,22 +650,33 @@ class PlaybackDialog(QDialog):
         return raw_words
 
     def _fetch_playback_source(self):
+        # Qt's Windows media backend can reach EndOfMedia immediately when an
+        # MP4 is served through a proxy/storage URL without the exact byte-range
+        # behavior it expects.  Keep direct streaming for audio, but use the
+        # established local-file path for video containers so full playback and
+        # word seeking remain reliable.
+        if os.path.splitext(self.filename)[1].lower() in VIDEO_EXTENSIONS:
+            return self._download_playback_source()
         try:
             return False, self.client.get_playback_url(self.job_id)
         except Exception:
             # Older deployed backends may not have /playback-url yet.  Retain
             # the existing local-download behavior as a compatibility fallback.
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".audio")
-            tmp.close()
+            return self._download_playback_source()
+
+    def _download_playback_source(self):
+        suffix = os.path.splitext(self.filename)[1] or ".audio"
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        tmp.close()
+        try:
+            self.client.download_audio(self.job_id, tmp.name)
+            return True, tmp.name
+        except Exception:
             try:
-                self.client.download_audio(self.job_id, tmp.name)
-                return True, tmp.name
-            except Exception:
-                try:
-                    os.remove(tmp.name)
-                except OSError:
-                    pass
-                raise
+                os.remove(tmp.name)
+            except OSError:
+                pass
+            raise
 
     def _apply_playback_words(self, raw_words):
         if not raw_words:
