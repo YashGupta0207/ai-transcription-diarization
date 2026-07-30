@@ -93,9 +93,9 @@ class BackendClient:
         resp.raise_for_status()
         return resp.json()
 
-    def live_ws_url(self) -> str:
+    def live_ws_url(self, sample_rate: int = 16000) -> str:
         """Builds the ws:// or wss:// URL for the live transcription endpoint,
         derived from the same base_url used for everything else."""
         if self.base_url.startswith("https://"):
-            return self.base_url.replace("https://", "wss://") + "/ws/live?format=linear16"
-        return self.base_url.replace("http://", "ws://") + "/ws/live?format=linear16"
+            return self.base_url.replace("https://", "wss://") + f"/ws/live?format=linear16&sample_rate={sample_rate}"
+        return self.base_url.replace("http://", "ws://") + f"/ws/live?format=linear16&sample_rate={sample_rate}"

@@ -20,7 +20,8 @@ import os
 import tempfile
 import html
 
-from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtCore import QTimer, Qt, QUrl, QSettings
+from PySide6.QtGui import QTextCursor
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -29,7 +30,9 @@ from PySide6.QtWidgets import (
 )
 
 from client import BackendClient
-from live_transcriber import LiveTranscriber
+from live_transcriber import (
+    LiveTranscriber, MICROPHONE_ONLY, SYSTEM_AUDIO_ONLY, MICROPHONE_AND_SYSTEM,
+)
 from transcript_sync import active_word_index, format_timestamp
 from async_worker import run_in_background
 
@@ -259,11 +262,24 @@ class LiveTranscriptionDialog(QDialog):
         self.resize(600, 500)
         self.client = client
         self.transcriber = None
+        self.settings = QSettings("TranscribeApp", "TranscribeApp")
 
         layout = QVBoxLayout(self)
 
         self.status_label = QLabel("Not recording")
         layout.addWidget(self.status_label)
+
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Audio source:"))
+        self.source_combo = QComboBox()
+        self.source_combo.addItem("Microphone only", MICROPHONE_ONLY)
+        self.source_combo.addItem("System audio only (Windows)", SYSTEM_AUDIO_ONLY)
+        self.source_combo.addItem("Microphone + system audio (Windows)", MICROPHONE_AND_SYSTEM)
+        saved_source = self.settings.value("live_audio_source", MICROPHONE_ONLY)
+        saved_index = self.source_combo.findData(saved_source)
+        self.source_combo.setCurrentIndex(max(0, saved_index))
+        source_row.addWidget(self.source_combo, stretch=1)
+        layout.addLayout(source_row)
 
         self.transcript_view = QTextEdit()
         self.transcript_view.setReadOnly(True)
@@ -285,21 +301,36 @@ class LiveTranscriptionDialog(QDialog):
 
         self._current_speaker = None
         self._paused = False
-        self._pending_transcript_events = []
-        self._transcript_flush_timer = QTimer(self)
-        self._transcript_flush_timer.setSingleShot(True)
-        self._transcript_flush_timer.timeout.connect(self._flush_transcript_events)
+        # Positions delimit the one provisional Deepgram hypothesis at the end
+        # of the document.  Finalized text is never selected or redrawn.
+        self._interim_start = None
+        self._interim_end = None
 
     def on_start(self):
         try:
-            self.transcriber = LiveTranscriber(self.client.live_ws_url())
-            self.transcriber.transcript_received.connect(self.on_transcript)
-            self.transcriber.saved.connect(self.on_saved)
-            self.transcriber.error.connect(self.on_error)
-            self.transcriber.stopped.connect(self.on_stopped)
+            source = self.source_combo.currentData()
+            self.settings.setValue("live_audio_source", source)
+            if source != MICROPHONE_ONLY and not LiveTranscriber.loopback_available():
+                QMessageBox.warning(
+                    self,
+                    "System audio unavailable",
+                    "Windows WASAPI loopback is unavailable for the current output device. "
+                    "Recording will continue with microphone-only audio.",
+                )
+                source = MICROPHONE_ONLY
+            sample_rate = 16000 if source == MICROPHONE_ONLY else 48000
+            self.transcriber = LiveTranscriber(self.client.live_ws_url(sample_rate), source)
+            # The capture/WebSocket code emits from worker threads.  Explicit
+            # queued connections guarantee all widget writes run on Qt's GUI
+            # thread, regardless of a sender object's thread affinity.
+            self.transcriber.transcript_received.connect(self.on_transcript, Qt.QueuedConnection)
+            self.transcriber.saved.connect(self.on_saved, Qt.QueuedConnection)
+            self.transcriber.error.connect(self.on_error, Qt.QueuedConnection)
+            self.transcriber.stopped.connect(self.on_stopped, Qt.QueuedConnection)
             self.transcriber.start()
             self.status_label.setText("Recording…")
             self.start_btn.setEnabled(False)
+            self.source_combo.setEnabled(False)
             self.pause_btn.setEnabled(True)
             self.stop_btn.setEnabled(True)
         except Exception as e:
@@ -327,30 +358,68 @@ class LiveTranscriptionDialog(QDialog):
         self.pause_btn.setEnabled(False)
 
     def on_transcript(self, data: dict):
-        if not data.get("is_final"):
-            return
-        # Signals are delivered on Qt's GUI thread.  Coalescing short bursts
-        # prevents a document relayout for every finalized utterance.
-        self._pending_transcript_events.append(data)
-        if not self._transcript_flush_timer.isActive():
-            self._transcript_flush_timer.start(100)
+        """Apply one Deepgram event without clearing/rebuilding the document.
 
-    def _flush_transcript_events(self):
-        parts = []
-        for data in self._pending_transcript_events:
-            if data["speaker"] != self._current_speaker:
-                parts.append(f"\n{data['speaker']}\n")
-                self._current_speaker = data["speaker"]
-            parts.append(data["text"] + " ")
-        self._pending_transcript_events.clear()
-        if parts:
-            self.transcript_view.insertPlainText("".join(parts))
+        Interim results are alternative hypotheses for the same unfinished
+        utterance.  They replace only the dedicated trailing range.  A final
+        result first removes that range, then becomes permanent text.
+        """
+        text = str(data.get("text", "")).strip()
+        if not text:
+            return
+        speaker = str(data.get("speaker") or "Speaker 1")
+
+        if data.get("is_final"):
+            self._remove_interim()
+            self._append_segment(speaker, text)
+            return
+
+        self._replace_interim(speaker, text)
+
+    def _append_segment(self, speaker: str, text: str):
+        cursor = self.transcript_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.beginEditBlock()
+        if speaker != self._current_speaker:
+            cursor.insertText(f"\n{speaker}\n")
+            self._current_speaker = speaker
+        cursor.insertText(text + " ")
+        cursor.endEditBlock()
+        self.transcript_view.setTextCursor(cursor)
+
+    def _replace_interim(self, speaker: str, text: str):
+        self._remove_interim()
+        cursor = self.transcript_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.beginEditBlock()
+        self._interim_start = cursor.position()
+        # The provisional speaker label is inside the same range, so finalizing
+        # cannot leave a duplicate label behind.
+        prefix = f"\n{speaker}\n" if speaker != self._current_speaker else ""
+        cursor.insertText(prefix + text + " ")
+        self._interim_end = cursor.position()
+        cursor.endEditBlock()
+        self.transcript_view.setTextCursor(cursor)
+
+    def _remove_interim(self):
+        if self._interim_start is None or self._interim_end is None:
+            return
+        cursor = self.transcript_view.textCursor()
+        cursor.setPosition(self._interim_start)
+        cursor.setPosition(self._interim_end, QTextCursor.KeepAnchor)
+        cursor.beginEditBlock()
+        cursor.removeSelectedText()
+        cursor.endEditBlock()
+        self.transcript_view.setTextCursor(cursor)
+        self._interim_start = None
+        self._interim_end = None
 
     def on_saved(self, job_id):
         if job_id:
             QMessageBox.information(self, "Saved", "Live session saved to your job list.")
         self.status_label.setText("Not recording")
         self.start_btn.setEnabled(True)
+        self.source_combo.setEnabled(True)
 
     def on_error(self, message: str):
         QMessageBox.critical(self, "Live transcription error", message)
@@ -360,6 +429,7 @@ class LiveTranscriptionDialog(QDialog):
         self.start_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
+        self.source_combo.setEnabled(True)
 
 
 class SpeakerCard(QFrame):

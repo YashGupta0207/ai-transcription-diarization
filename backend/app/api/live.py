@@ -42,19 +42,28 @@ logger = setup_logging("live")
 router = APIRouter(tags=["live"])
 
 
-def build_deepgram_live_url(audio_format: str) -> str:
+def build_deepgram_live_url(audio_format: str, sample_rate: int = 16000) -> str:
     base = (
         "wss://api.deepgram.com/v1/listen"
         "?punctuate=true&diarize=true&interim_results=true&smart_format=true&model=nova-2"
     )
     if audio_format == "linear16":
-        base += "&encoding=linear16&sample_rate=16000&channels=1"
+        base += f"&encoding=linear16&sample_rate={sample_rate}&channels=1"
     return base
 
 
 @router.websocket("/ws/live")
-async def live_transcription(websocket: WebSocket, format: str = Query(default="webm")):
+async def live_transcription(
+    websocket: WebSocket,
+    format: str = Query(default="webm"),
+    sample_rate: int = Query(default=16000),
+):
     await websocket.accept()
+
+    if format == "linear16" and sample_rate not in (16000, 48000):
+        await websocket.send_json({"type": "error", "message": "linear16 supports 16 kHz or 48 kHz audio"})
+        await websocket.close()
+        return
 
     if not settings.DEEPGRAM_API_KEY:
         await websocket.send_json({"type": "error", "message": "DEEPGRAM_API_KEY not configured on server"})
@@ -70,7 +79,7 @@ async def live_transcription(websocket: WebSocket, format: str = Query(default="
 
     try:
         async with ws_client.connect(
-            build_deepgram_live_url(format),
+            build_deepgram_live_url(format, sample_rate),
             # websockets 14+ renamed the legacy ``extra_headers`` argument.
             # Pinning the supported range in requirements keeps this aligned
             # with the installed client API instead of silently failing before
@@ -161,7 +170,7 @@ async def live_transcription(websocket: WebSocket, format: str = Query(default="
         if collected_segments:
             storage = get_storage()
             timestamp = datetime.utcnow().strftime("%Y-%m-%d %H-%M-%S")
-            audio_file, suffix, content_type = _finalize_live_audio(recorded_audio, format)
+            audio_file, suffix, content_type = _finalize_live_audio(recorded_audio, format, sample_rate)
             persisted_audio = audio_file
             size_bytes = audio_file.seek(0, 2)
             audio_file.seek(0)
@@ -192,7 +201,7 @@ async def live_transcription(websocket: WebSocket, format: str = Query(default="
         pass
 
 
-def _finalize_live_audio(recorded_audio, audio_format: str):
+def _finalize_live_audio(recorded_audio, audio_format: str, sample_rate: int = 16000):
     """Return a playable persisted stream for either supported live client."""
     recorded_audio.seek(0)
     if audio_format != "linear16":
@@ -205,7 +214,7 @@ def _finalize_live_audio(recorded_audio, audio_format: str):
     with wave.open(wav_file, "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
-        wav.setframerate(16000)
+        wav.setframerate(sample_rate)
         wav.writeframes(recorded_audio.read())
     wav_file.seek(0)
     return wav_file, ".wav", "audio/wav"
