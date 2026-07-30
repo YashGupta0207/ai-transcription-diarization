@@ -12,19 +12,23 @@ class WorkerSignals(QObject):
     result = Signal(object)
     error = Signal(str)
     finished = Signal()
+    progress = Signal(object)
 
 
 class _Runnable(QRunnable):
-    def __init__(self, fn: Callable[..., Any], args: tuple, kwargs: dict):
+    def __init__(self, fn: Callable[..., Any], args: tuple, kwargs: dict, report_progress: bool = False):
         super().__init__()
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
+        self.report_progress = report_progress
         self.signals = WorkerSignals()
 
     @Slot()
     def run(self):
         try:
+            if self.report_progress:
+                self.kwargs["progress_callback"] = self.signals.progress.emit
             self.signals.result.emit(self.fn(*self.args, **self.kwargs))
         except Exception:
             self.signals.error.emit(traceback.format_exc())
@@ -32,8 +36,8 @@ class _Runnable(QRunnable):
             self.signals.finished.emit()
 
 
-def run_in_background(fn: Callable[..., Any], *args, **kwargs) -> WorkerSignals:
+def run_in_background(fn: Callable[..., Any], *args, progress: bool = False, **kwargs) -> WorkerSignals:
     """Schedule blocking work; all returned signals are delivered to the GUI thread."""
-    runnable = _Runnable(fn, args, kwargs)
+    runnable = _Runnable(fn, args, kwargs, report_progress=progress)
     QThreadPool.globalInstance().start(runnable)
     return runnable.signals

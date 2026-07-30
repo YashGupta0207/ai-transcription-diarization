@@ -26,7 +26,7 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QListWidget, QListWidgetItem, QTextEdit, QFileDialog,
-    QLabel, QMessageBox, QComboBox, QDialog, QSlider, QScrollArea, QFrame, QLineEdit
+    QLabel, QMessageBox, QComboBox, QDialog, QSlider, QScrollArea, QFrame, QLineEdit, QProgressBar
 )
 
 from client import BackendClient
@@ -51,6 +51,8 @@ class MainWindow(QMainWindow):
         self._refresh_in_flight = False
         self._result_request_id = 0
         self._active_job_signature = None
+        self._settings = QSettings("TranscribeApp", "TranscribeApp")
+        self._upload_started_at = None
 
         root = QWidget()
         layout = QHBoxLayout(root)
@@ -60,6 +62,14 @@ class MainWindow(QMainWindow):
         self.upload_btn = QPushButton("Upload Audio/Video File")
         self.upload_btn.clicked.connect(self.on_upload)
         left.addWidget(self.upload_btn)
+        self.upload_progress = QProgressBar()
+        self.upload_progress.setVisible(False)
+        self.upload_progress.setTextVisible(True)
+        left.addWidget(self.upload_progress)
+        self.upload_details = QLabel()
+        self.upload_details.setWordWrap(True)
+        self.upload_details.setVisible(False)
+        left.addWidget(self.upload_details)
 
         self.live_btn = QPushButton("🎙 Live Transcription")
         self.live_btn.clicked.connect(self.on_open_live)
@@ -123,15 +133,61 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.upload_btn.setEnabled(False)
-        self.status_label.setText("Uploading in the background…")
-        signals = run_in_background(self.client.upload_file, path)
-        signals.result.connect(self._on_upload_complete)
+        total_bytes = os.path.getsize(path)
+        self._upload_started_at = None
+        self.upload_progress.setRange(0, 100)
+        self.upload_progress.setValue(0)
+        self.upload_progress.setVisible(True)
+        self.upload_details.setText(f"Uploading {os.path.basename(path)}\n0 B / {self._format_bytes(total_bytes)}")
+        self.upload_details.setVisible(True)
+        self.status_label.setText("Uploading…")
+        signals = run_in_background(self.client.upload_file, path, progress=True)
+        signals.progress.connect(self._on_upload_progress)
+        signals.result.connect(lambda result: self._on_upload_complete(result, path))
         signals.error.connect(lambda error: QMessageBox.critical(self, "Upload failed", error))
-        signals.finished.connect(lambda: self.upload_btn.setEnabled(True))
+        signals.finished.connect(self._finish_upload)
 
-    def _on_upload_complete(self, result):
+    def _on_upload_progress(self, progress):
+        sent = progress.get("sent", 0)
+        total = progress.get("total", 0)
+        elapsed = progress.get("elapsed", 0.0)
+        if self._upload_started_at is None and sent:
+            self._upload_started_at = elapsed
+        percent = int((sent * 100 / total) if total else 0)
+        self.upload_progress.setValue(percent)
+        speed = sent / elapsed if elapsed > 0 else 0
+        remaining = (total - sent) / speed if speed > 0 else None
+        eta = f"\nETA: {self._format_duration(remaining)}" if remaining is not None else ""
+        self.upload_details.setText(
+            f"Uploading {percent}%\n{self._format_bytes(sent)} / {self._format_bytes(total)}"
+            f"\nSpeed: {self._format_bytes(speed)}/s{eta}"
+        )
+
+    def _finish_upload(self):
+        self.upload_btn.setEnabled(True)
+
+    def _on_upload_complete(self, result, path):
+        self._settings.setValue(f"local_media/{result['job_id']}", os.path.abspath(path))
+        self.upload_progress.setValue(100)
+        self.upload_details.setText("Upload complete — waiting in queue…")
+        self.status_label.setText("Waiting in queue…")
         QMessageBox.information(self, "Uploaded", f"Job queued: {result['job_id']}")
         self.refresh_jobs()
+
+    @staticmethod
+    def _format_bytes(value):
+        value = float(value or 0)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if value < 1024 or unit == "TB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024
+
+    @staticmethod
+    def _format_duration(seconds):
+        seconds = max(0, int(seconds))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
 
     def refresh_jobs(self):
         # Do not queue overlapping polls while an earlier request is still in
@@ -227,6 +283,9 @@ class MainWindow(QMainWindow):
         signals.finished.connect(lambda: self.delete_btn.setEnabled(True))
 
     def _on_delete_complete(self, _result):
+        job_id = self.current_job_id()
+        if job_id:
+            self._settings.remove(f"local_media/{job_id}")
         self.refresh_jobs()
         self.transcript_view.clear()
 
@@ -263,7 +322,8 @@ class MainWindow(QMainWindow):
             return
         job = self.jobs_by_row.get(self.job_list.currentRow())
         filename = job["original_filename"] if job else ""
-        dlg = PlaybackDialog(self.client, job_id, filename, self)
+        original_file_path = self._settings.value(f"local_media/{job_id}", "")
+        dlg = PlaybackDialog(self.client, job_id, filename, original_file_path, self)
         dlg.exec()
 
 
@@ -536,13 +596,14 @@ class SpeakerCard(QFrame):
 
 
 class PlaybackDialog(QDialog):
-    def __init__(self, client: BackendClient, job_id: str, filename: str, parent=None):
+    def __init__(self, client: BackendClient, job_id: str, filename: str, original_file_path: str = "", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Verify Playback")
         self.resize(760, 620)
         self.client = client
         self.job_id = job_id
         self.filename = filename
+        self.original_file_path = original_file_path or ""
         self.words = []
         self.word_starts = []
         self.cards = []
@@ -566,6 +627,10 @@ class PlaybackDialog(QDialog):
         title.setStyleSheet("font-weight:700; font-size:15px;")
         header.addWidget(title)
         header.addStretch()
+        self.locate_media_btn = QPushButton("Locate original media…")
+        self.locate_media_btn.clicked.connect(self.on_locate_media)
+        self.locate_media_btn.setVisible(False)
+        header.addWidget(self.locate_media_btn)
         layout.addLayout(header)
 
         search_row = QHBoxLayout()
@@ -629,13 +694,11 @@ class PlaybackDialog(QDialog):
         self._load_audio_and_words()
 
     def _load_audio_and_words(self):
-        self.playback_info.setText("Loading transcript and audio…")
+        self.playback_info.setText("Loading transcript…")
         word_signals = run_in_background(self._fetch_playback_words)
         word_signals.result.connect(self._apply_playback_words)
         word_signals.error.connect(lambda error: QMessageBox.warning(self, "Transcript unavailable", error))
-        source_signals = run_in_background(self._fetch_playback_source)
-        source_signals.result.connect(self._apply_playback_source)
-        source_signals.error.connect(lambda error: QMessageBox.warning(self, "Audio unavailable", error))
+        self._load_local_media()
 
     def _fetch_playback_words(self):
         try:
@@ -649,34 +712,34 @@ class PlaybackDialog(QDialog):
 
         return raw_words
 
-    def _fetch_playback_source(self):
-        # Qt's Windows media backend can reach EndOfMedia immediately when an
-        # MP4 is served through a proxy/storage URL without the exact byte-range
-        # behavior it expects.  Keep direct streaming for audio, but use the
-        # established local-file path for video containers so full playback and
-        # word seeking remain reliable.
-        if os.path.splitext(self.filename)[1].lower() in VIDEO_EXTENSIONS:
-            return self._download_playback_source()
-        try:
-            return False, self.client.get_playback_url(self.job_id)
-        except Exception:
-            # Older deployed backends may not have /playback-url yet.  Retain
-            # the existing local-download behavior as a compatibility fallback.
-            return self._download_playback_source()
+    def _load_local_media(self):
+        if self.original_file_path and os.path.isfile(self.original_file_path):
+            self.player.setSource(QUrl.fromLocalFile(self.original_file_path))
+            self._audio_source_ready = True
+            self._update_playback_loading_label()
+            return
 
-    def _download_playback_source(self):
-        suffix = os.path.splitext(self.filename)[1] or ".audio"
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-        tmp.close()
-        try:
-            self.client.download_audio(self.job_id, tmp.name)
-            return True, tmp.name
-        except Exception:
-            try:
-                os.remove(tmp.name)
-            except OSError:
-                pass
-            raise
+        expected_path = self.original_file_path or "No local path was saved for this job."
+        missing = QLabel(f"Original media file not found.\nExpected location: {expected_path}")
+        missing.setWordWrap(True)
+        missing.setStyleSheet("color:#f2c94c; padding: 16px;")
+        self.cards_layout.insertWidget(0, missing)
+        self.locate_media_btn.setVisible(True)
+        self.playback_info.setText("Locate the original media file to enable playback.")
+
+    def on_locate_media(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Locate original media", self.original_file_path or "",
+            "Media Files (*.mp3 *.wav *.m4a *.aac *.ogg *.flac *.mp4 *.mov *.mkv *.avi)",
+        )
+        if not path:
+            return
+        self.original_file_path = path
+        QSettings("TranscribeApp", "TranscribeApp").setValue(f"local_media/{self.job_id}", path)
+        self.locate_media_btn.setVisible(False)
+        self.player.setSource(QUrl.fromLocalFile(path))
+        self._audio_source_ready = True
+        self._update_playback_loading_label()
 
     def _apply_playback_words(self, raw_words):
         if not raw_words:
@@ -693,27 +756,11 @@ class PlaybackDialog(QDialog):
             self._prepare_card_groups()
         self._update_playback_loading_label()
 
-    def _apply_playback_source(self, source):
-        is_local_file, value = source
-        if is_local_file:
-            self._temp_audio_path = value
-            self.player.setSource(QUrl.fromLocalFile(value))
-        else:
-            self.player.setSource(QUrl(value))
-        self._audio_source_ready = True
-        self._update_playback_loading_label()
-
     def _update_playback_loading_label(self):
         if getattr(self, "_audio_source_ready", False):
             self.playback_info.setText("Speaker: —  |  Word: —")
         else:
-            self.playback_info.setText("Transcript loaded. Preparing audio stream…")
-
-    def _apply_playback_data(self, payload):
-        """Compatibility shim for callers from older packaged builds."""
-        raw_words, audio_path = payload
-        self._apply_playback_words(raw_words)
-        self._apply_playback_source((True, audio_path))
+            self.playback_info.setText("Locate the original media file to enable playback.")
 
     def _prepare_card_groups(self):
         """Group words once, then create a bounded number of widgets per tick."""

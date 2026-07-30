@@ -5,6 +5,8 @@ provider API keys - only the DESKTOP_API_KEY shared secret used to
 authenticate with our own backend.
 """
 import os
+import time
+import uuid
 from urllib.parse import urljoin
 import requests
 
@@ -15,20 +17,72 @@ BACKEND_BASE_URL = os.environ.get("BACKEND_BASE_URL", "https://ai-transcription-
 DESKTOP_API_KEY = os.environ.get("DESKTOP_API_KEY", "dev-desktop-key-change-me")
 
 
+class _MultipartUploadStream:
+    """Iterable multipart body that reports actual source-file bytes sent."""
+    CHUNK_SIZE = 512 * 1024
+
+    def __init__(self, file_path, filename, boundary, fields, progress_callback):
+        self.file_path = file_path
+        self.progress_callback = progress_callback
+        self.total_size = os.path.getsize(file_path)
+        self.started = time.monotonic()
+        prefix = []
+        for name, value in fields:
+            prefix.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode())
+        escaped_name = filename.replace('"', "'")
+        prefix.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{escaped_name}\"\r\n"
+            "Content-Type: application/octet-stream\r\n\r\n".encode()
+        )
+        self.prefix = b"".join(prefix)
+        self.suffix = f"\r\n--{boundary}--\r\n".encode()
+
+    def __len__(self):
+        return len(self.prefix) + self.total_size + len(self.suffix)
+
+    def __iter__(self):
+        with open(self.file_path, "rb") as f:
+            yield self.prefix
+            sent = 0
+            while chunk := f.read(self.CHUNK_SIZE):
+                sent += len(chunk)
+                if self.progress_callback:
+                    self.progress_callback({
+                        "sent": sent,
+                        "total": self.total_size,
+                        "elapsed": time.monotonic() - self.started,
+                    })
+                yield chunk
+            yield self.suffix
+
+
 class BackendClient:
     def __init__(self, base_url: str = None, api_key: str = None):
         self.base_url = (base_url or BACKEND_BASE_URL).rstrip("/")
         self.api_key = api_key or DESKTOP_API_KEY
         self.headers = {"X-API-Key": self.api_key}
 
-    def upload_file(self, file_path: str, provider: str = None) -> dict:
-        with open(file_path, "rb") as f:
-            files = {"file": (os.path.basename(file_path), f)}
-            data = {"provider": provider} if provider else {}
-            resp = requests.post(
-                f"{self.base_url}/upload", headers=self.headers, files=files, data=data, timeout=120
-            )
+    def upload_file(self, file_path: str, provider: str = None, progress_callback=None) -> dict:
+        """Upload with real byte-level progress without buffering the file in RAM."""
+        filename = os.path.basename(file_path)
+        total_size = os.path.getsize(file_path)
+        boundary = f"----TranscribeApp{uuid.uuid4().hex}"
+        fields = []
+        if provider:
+            fields.append(("provider", provider))
+        body = _MultipartUploadStream(file_path, filename, boundary, fields, progress_callback)
+        headers = {
+            **self.headers,
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        }
+        started = time.monotonic()
+        if progress_callback:
+            progress_callback({"sent": 0, "total": total_size, "elapsed": 0.0})
+        resp = requests.post(f"{self.base_url}/upload", headers=headers, data=body, timeout=120)
         resp.raise_for_status()
+        if progress_callback:
+            progress_callback({"sent": total_size, "total": total_size, "elapsed": time.monotonic() - started})
         return resp.json()
 
     def get_status(self, job_id: str) -> dict:
