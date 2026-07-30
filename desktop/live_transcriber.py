@@ -4,6 +4,9 @@ import platform
 import queue
 import threading
 import time
+import wave
+from datetime import datetime
+from local_media import transcription_audio_directory
 
 import numpy as np
 import sounddevice as sd
@@ -54,6 +57,9 @@ class LiveTranscriber(QObject):
         self._mixer_thread = None
         self._stream = None
         self._overflow_reported = False
+        self._local_wave = None
+        self._local_wave_lock = threading.Lock()
+        self.local_recording_path = None
 
     @property
     def sample_rate(self) -> int:
@@ -71,6 +77,7 @@ class LiveTranscriber(QObject):
             return False
 
     def start(self):
+        self._open_local_recording()
         self._recording = True
         self._paused = False
         self._ws_thread = threading.Thread(target=self._run_websocket, daemon=True, name="live-websocket")
@@ -212,6 +219,7 @@ class LiveTranscriber(QObject):
 
     def _enqueue_pcm(self, samples):
         pcm_bytes = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+        self._write_local_audio(pcm_bytes)
         try:
             self._audio_queue.put_nowait(pcm_bytes)
         except queue.Full:
@@ -219,6 +227,38 @@ class LiveTranscriber(QObject):
                 self._overflow_reported = True
                 self.error.emit("Network cannot keep up with live audio; recording was stopped to avoid data loss.")
             self._recording = False
+
+    def _open_local_recording(self):
+        try:
+            directory = transcription_audio_directory()
+            timestamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+            candidate = directory / f"Live Recording {timestamp}.wav"
+            index = 1
+            while candidate.exists():
+                candidate = directory / f"Live Recording {timestamp} ({index}).wav"
+                index += 1
+            wav = wave.open(str(candidate), "wb")
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(self.sample_rate)
+            self._local_wave = wav
+            self.local_recording_path = str(candidate.resolve())
+        except Exception as exc:
+            self.local_recording_path = None
+            self.error.emit(f"Could not save a local live recording: {exc}")
+
+    def _write_local_audio(self, pcm_bytes: bytes):
+        with self._local_wave_lock:
+            if self._local_wave:
+                self._local_wave.writeframesraw(pcm_bytes)
+
+    def _close_local_recording(self):
+        with self._local_wave_lock:
+            if self._local_wave:
+                try:
+                    self._local_wave.close()
+                finally:
+                    self._local_wave = None
 
     def _run_websocket(self):
         try:
@@ -254,6 +294,7 @@ class LiveTranscriber(QObject):
                 self.error.emit(f"Live connection closed: {exc}")
         finally:
             self._recording = False
+            self._close_local_recording()
             try:
                 self._ws.close()
             except Exception:
@@ -276,3 +317,4 @@ class LiveTranscriber(QObject):
                 self._ws.send("stop")
             except Exception:
                 pass
+        self._close_local_recording()

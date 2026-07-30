@@ -35,6 +35,7 @@ from live_transcriber import (
 )
 from transcript_sync import active_word_index, format_timestamp
 from async_worker import run_in_background
+from local_media import LocalMediaRegistry
 
 POLL_INTERVAL_MS = 4000
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi"}
@@ -51,7 +52,7 @@ class MainWindow(QMainWindow):
         self._refresh_in_flight = False
         self._result_request_id = 0
         self._active_job_signature = None
-        self._settings = QSettings("TranscribeApp", "TranscribeApp")
+        self._media_registry = LocalMediaRegistry()
         self._upload_started_at = None
 
         root = QWidget()
@@ -167,7 +168,7 @@ class MainWindow(QMainWindow):
         self.upload_btn.setEnabled(True)
 
     def _on_upload_complete(self, result, path):
-        self._settings.setValue(f"local_media/{result['job_id']}", os.path.abspath(path))
+        self._media_registry.set(result["job_id"], path)
         self.upload_progress.setValue(100)
         self.upload_details.setText("Upload complete — waiting in queue…")
         self.status_label.setText("Waiting in queue…")
@@ -285,7 +286,7 @@ class MainWindow(QMainWindow):
     def _on_delete_complete(self, _result):
         job_id = self.current_job_id()
         if job_id:
-            self._settings.remove(f"local_media/{job_id}")
+            self._media_registry.remove(job_id)
         self.refresh_jobs()
         self.transcript_view.clear()
 
@@ -322,7 +323,7 @@ class MainWindow(QMainWindow):
             return
         job = self.jobs_by_row.get(self.job_list.currentRow())
         filename = job["original_filename"] if job else ""
-        original_file_path = self._settings.value(f"local_media/{job_id}", "")
+        original_file_path = self._media_registry.get(job_id)
         dlg = PlaybackDialog(self.client, job_id, filename, original_file_path, self)
         dlg.exec()
 
@@ -488,6 +489,9 @@ class LiveTranscriptionDialog(QDialog):
 
     def on_saved(self, job_id):
         if job_id:
+            local_path = self.transcriber.local_recording_path if self.transcriber else None
+            if local_path and os.path.isfile(local_path):
+                LocalMediaRegistry().set(job_id, local_path)
             QMessageBox.information(self, "Saved", "Live session saved to your job list.")
         self.status_label.setText("Not recording")
         self.start_btn.setEnabled(True)
@@ -735,7 +739,7 @@ class PlaybackDialog(QDialog):
         if not path:
             return
         self.original_file_path = path
-        QSettings("TranscribeApp", "TranscribeApp").setValue(f"local_media/{self.job_id}", path)
+        LocalMediaRegistry().set(self.job_id, path)
         self.locate_media_btn.setVisible(False)
         self.player.setSource(QUrl.fromLocalFile(path))
         self._audio_source_ready = True
