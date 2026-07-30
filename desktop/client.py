@@ -5,6 +5,7 @@ provider API keys - only the DESKTOP_API_KEY shared secret used to
 authenticate with our own backend.
 """
 import os
+from urllib.parse import urljoin
 import requests
 
 # Hardcoded so the packaged .exe works standalone for any user, with no
@@ -70,6 +71,19 @@ class BackendClient:
                     if chunk:
                         f.write(chunk)
         return dest_path
+
+    def get_playback_url(self, job_id: str) -> str:
+        """Get a short-lived/public media URL after authenticating to our API.
+
+        QMediaPlayer can stream this URL itself, avoiding a full download of a
+        large video before the user can begin playback.
+        """
+        resp = requests.get(f"{self.base_url}/jobs/{job_id}/playback-url", headers=self.headers, timeout=30)
+        resp.raise_for_status()
+        url = resp.json()["url"]
+        # Local storage returns '/files/...'; QMediaPlayer needs a complete
+        # URL, whereas S3/B2 already returns an absolute presigned URL.
+        return urljoin(f"{self.base_url}/", url)
 
     def export(self, job_id: str, fmt: str) -> str:
         resp = requests.get(

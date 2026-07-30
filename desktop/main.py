@@ -49,6 +49,7 @@ class MainWindow(QMainWindow):
         self.jobs_by_row = {}
         self._refresh_in_flight = False
         self._result_request_id = 0
+        self._active_job_signature = None
 
         root = QWidget()
         layout = QHBoxLayout(root)
@@ -170,29 +171,39 @@ class MainWindow(QMainWindow):
         job = self.jobs_by_row.get(row)
         if not job:
             return
+        # The four-second job poll repopulates the list and restores its
+        # selection.  Do not treat that restoration as a new user selection:
+        # repeatedly setting "Loading transcript" was the visible blink.
+        signature = (job["id"], job["status"], job.get("updated_at"))
         self.status_label.setText(
             f"Job {job['id']}  |  Status: {job['status']}  |  Provider: {job['provider']}"
         )
         self.playback_btn.setEnabled(job["status"] == "completed")
+        if signature == self._active_job_signature:
+            return
+        self._active_job_signature = signature
         if job["status"] == "completed":
             self._result_request_id += 1
             request_id = self._result_request_id
             self.transcript_view.setPlainText("Loading transcript…")
             signals = run_in_background(self.client.get_result, job["id"])
-            signals.result.connect(lambda result: self._show_transcript(request_id, result))
-            signals.error.connect(lambda error: self._show_transcript_error(request_id, error))
+            signals.result.connect(lambda result: self._show_transcript(request_id, signature, result))
+            signals.error.connect(lambda error: self._show_transcript_error(request_id, signature, error))
         elif job["status"] == "failed":
             self.transcript_view.setPlainText(f"Job failed: {job.get('error_message', 'unknown error')}")
         else:
             self.transcript_view.setPlainText("Processing on the server - this window can be closed safely.")
 
-    def _show_transcript(self, request_id, result):
+    def _show_transcript(self, request_id, signature, result):
         if request_id == self._result_request_id:
             self.transcript_view.setPlainText(result.get("readable_transcript") or "(empty transcript)")
 
-    def _show_transcript_error(self, request_id, error):
+    def _show_transcript_error(self, request_id, signature, error):
         if request_id == self._result_request_id:
             self.transcript_view.setPlainText(f"Error loading transcript: {error}")
+            # Permit a later poll to retry a transient failed request.
+            if self._active_job_signature == signature:
+                self._active_job_signature = None
 
     def on_cancel(self):
         job_id = self.current_job_id()
@@ -617,11 +628,14 @@ class PlaybackDialog(QDialog):
 
     def _load_audio_and_words(self):
         self.playback_info.setText("Loading transcript and audio…")
-        signals = run_in_background(self._fetch_playback_data)
-        signals.result.connect(self._apply_playback_data)
-        signals.error.connect(lambda error: QMessageBox.warning(self, "Playback unavailable", error))
+        word_signals = run_in_background(self._fetch_playback_words)
+        word_signals.result.connect(self._apply_playback_words)
+        word_signals.error.connect(lambda error: QMessageBox.warning(self, "Transcript unavailable", error))
+        source_signals = run_in_background(self._fetch_playback_source)
+        source_signals.result.connect(self._apply_playback_source)
+        source_signals.error.connect(lambda error: QMessageBox.warning(self, "Audio unavailable", error))
 
-    def _fetch_playback_data(self):
+    def _fetch_playback_words(self):
         try:
             raw_words = self.client.get_words(self.job_id)
         except Exception:
@@ -631,22 +645,27 @@ class PlaybackDialog(QDialog):
         for idx, word in enumerate(raw_words):
             word["global_index"] = idx
 
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".audio")
-        tmp.close()
+        return raw_words
+
+    def _fetch_playback_source(self):
         try:
-            self.client.download_audio(self.job_id, tmp.name)
+            return False, self.client.get_playback_url(self.job_id)
         except Exception:
+            # Older deployed backends may not have /playback-url yet.  Retain
+            # the existing local-download behavior as a compatibility fallback.
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".audio")
+            tmp.close()
             try:
-                os.remove(tmp.name)
-            except OSError:
-                pass
-            raise
-        return raw_words, tmp.name
+                self.client.download_audio(self.job_id, tmp.name)
+                return True, tmp.name
+            except Exception:
+                try:
+                    os.remove(tmp.name)
+                except OSError:
+                    pass
+                raise
 
-    def _apply_playback_data(self, payload):
-        raw_words, audio_path = payload
-        self._temp_audio_path = audio_path
-
+    def _apply_playback_words(self, raw_words):
         if not raw_words:
             empty = QLabel(
                 "Word-level timestamps aren't available for this job (it may have been processed "
@@ -659,9 +678,29 @@ class PlaybackDialog(QDialog):
             self.words = raw_words
             self.word_starts = [float(word["start"]) for word in self.words]
             self._prepare_card_groups()
+        self._update_playback_loading_label()
 
-        self.player.setSource(QUrl.fromLocalFile(self._temp_audio_path))
-        self.playback_info.setText("Speaker: —  |  Word: —")
+    def _apply_playback_source(self, source):
+        is_local_file, value = source
+        if is_local_file:
+            self._temp_audio_path = value
+            self.player.setSource(QUrl.fromLocalFile(value))
+        else:
+            self.player.setSource(QUrl(value))
+        self._audio_source_ready = True
+        self._update_playback_loading_label()
+
+    def _update_playback_loading_label(self):
+        if getattr(self, "_audio_source_ready", False):
+            self.playback_info.setText("Speaker: —  |  Word: —")
+        else:
+            self.playback_info.setText("Transcript loaded. Preparing audio stream…")
+
+    def _apply_playback_data(self, payload):
+        """Compatibility shim for callers from older packaged builds."""
+        raw_words, audio_path = payload
+        self._apply_playback_words(raw_words)
+        self._apply_playback_source((True, audio_path))
 
     def _prepare_card_groups(self):
         """Group words once, then create a bounded number of widgets per tick."""
