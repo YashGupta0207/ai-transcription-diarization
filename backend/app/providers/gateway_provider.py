@@ -7,12 +7,7 @@ through the gateway.
 import sys
 import os
 
-# Add the SDK to the python path
-sdk_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../ai_gateway_sdk"))
-if sdk_path not in sys.path:
-    sys.path.insert(0, sdk_path)
-
-from dxdeepgram import DeepgramClient
+from app.ai_gateway_sdk.dxdeepgram import DeepgramClient
 from app.providers.base import SpeechProvider, TranscriptionResult, TranscriptSegment, WordTimestamp
 from app.config import settings
 
