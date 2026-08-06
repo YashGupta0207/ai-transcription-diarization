@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     S3_SECRET_ACCESS_KEY: str = ""
     S3_REGION: str = "us-west-002"
 
-    SPEECH_PROVIDER: str = "gateway"  # gateway | azure | deepgram | whisper | openrouter | assemblyai | gladia
+    SPEECH_PROVIDER: str = "azure"  # azure | gateway | deepgram | whisper | openrouter | assemblyai | gladia
     DEEPGRAM_API_KEY: str = ""
     GATEWAY_API_KEY: str = ""
     GATEWAY_BASE_URL: str = "https://ai-gateway-admin.onrender.com"
