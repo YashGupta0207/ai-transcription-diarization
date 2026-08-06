@@ -751,7 +751,7 @@
 
     const backendUrl = window.location.origin;
     const apiKey = "dev-desktop-key-change-me";
-    const providerName = "azure";
+    const providerName = "gateway";
 
     let selectedFile = null;
     let activeJobId = null;
@@ -1005,7 +1005,7 @@
 
         $('liveTranscript').innerHTML = '';
         let currentSpeaker = null;
-        
+
         let audioContext = null;
         let mediaStreamSource = null;
         let scriptProcessor = null;
@@ -1014,7 +1014,7 @@
           audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
           mediaStreamSource = audioContext.createMediaStreamSource(stream);
           scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-          
+
           scriptProcessor.onaudioprocess = (e) => {
             if (liveWs.readyState === WebSocket.OPEN) {
               const inputData = e.inputBuffer.getChannelData(0);
@@ -1025,21 +1025,21 @@
               liveWs.send(pcm.buffer);
             }
           };
-          
+
           mediaStreamSource.connect(scriptProcessor);
           scriptProcessor.connect(audioContext.destination);
-          
+
           // Store these so we can stop them later
           mediaRecorder = {
             state: 'recording',
             stream: stream,
-            pause: () => { 
+            pause: () => {
               mediaRecorder.state = 'paused';
-              if (audioContext.state === 'running') audioContext.suspend(); 
+              if (audioContext.state === 'running') audioContext.suspend();
             },
-            resume: () => { 
+            resume: () => {
               mediaRecorder.state = 'recording';
-              if (audioContext.state === 'suspended') audioContext.resume(); 
+              if (audioContext.state === 'suspended') audioContext.resume();
             },
             stop: () => {
               mediaRecorder.state = 'inactive';

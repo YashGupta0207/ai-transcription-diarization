@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dxai-sdk"
+version = "0.1.0"
+description = "Developer SDK for the AI Gateway — chat completions and transcription via developer tokens, never real provider keys."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "httpx>=0.27.0",
+]
+
+[tool.setuptools]
+packages = ["dxai", "dxai.resources", "dxdeepgram"]

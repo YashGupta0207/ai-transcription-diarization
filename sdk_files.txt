@@ -1,0 +1,10 @@
+C:/Users/gupta/AppData/Local/Temp/ai-gateway-platform/sdk\pyproject.toml
+C:/Users/gupta/AppData/Local/Temp/ai-gateway-platform/sdk\README.md
+C:/Users/gupta/AppData/Local/Temp/ai-gateway-platform/sdk\dxai\client.py
+C:/Users/gupta/AppData/Local/Temp/ai-gateway-platform/sdk\dxai\_client.py
+C:/Users/gupta/AppData/Local/Temp/ai-gateway-platform/sdk\dxai\__init__.py
+C:/Users/gupta/AppData/Local/Temp/ai-gateway-platform/sdk\dxai\resources\chat.py
+C:/Users/gupta/AppData/Local/Temp/ai-gateway-platform/sdk\dxai\resources\__init__.py
+C:/Users/gupta/AppData/Local/Temp/ai-gateway-platform/sdk\dxdeepgram\__init__.py
+C:/Users/gupta/AppData/Local/Temp/ai-gateway-platform/sdk\gateway\client.py
+C:/Users/gupta/AppData/Local/Temp/ai-gateway-platform/sdk\gateway\__init__.py
