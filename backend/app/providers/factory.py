@@ -6,6 +6,9 @@ from app.providers.base import SpeechProvider
 def get_provider(name: str = None) -> SpeechProvider:
     provider_name = (name or settings.SPEECH_PROVIDER).lower()
 
+    if provider_name == "azure":
+        from app.providers.azure_provider import AzureProvider
+        return AzureProvider()
     if provider_name == "deepgram":
         from app.providers.deepgram_provider import DeepgramProvider
         return DeepgramProvider()

@@ -751,7 +751,7 @@
 
     const backendUrl = window.location.origin;
     const apiKey = "dev-desktop-key-change-me";
-    const providerName = "deepgram";
+    const providerName = "azure";
 
     let selectedFile = null;
     let activeJobId = null;
@@ -1000,21 +1000,58 @@
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        liveWs = new WebSocket(`${wsProtocol}//${window.location.host}/ws/live`);
+        liveWs = new WebSocket(`${wsProtocol}//${window.location.host}/ws/live?format=linear16&sample_rate=16000`);
         liveWs.binaryType = 'arraybuffer';
 
         $('liveTranscript').innerHTML = '';
         let currentSpeaker = null;
+        
+        let audioContext = null;
+        let mediaStreamSource = null;
+        let scriptProcessor = null;
 
         liveWs.onopen = () => {
-          mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-          mediaRecorder.ondataavailable = async (e) => {
-            if (e.data && e.data.size > 0 && liveWs.readyState === WebSocket.OPEN) {
-              const buf = await e.data.arrayBuffer();
-              liveWs.send(buf);
+          audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+          mediaStreamSource = audioContext.createMediaStreamSource(stream);
+          scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+          
+          scriptProcessor.onaudioprocess = (e) => {
+            if (liveWs.readyState === WebSocket.OPEN) {
+              const inputData = e.inputBuffer.getChannelData(0);
+              const pcm = new Int16Array(inputData.length);
+              for (let i = 0; i < inputData.length; i++) {
+                pcm[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
+              }
+              liveWs.send(pcm.buffer);
             }
           };
-          mediaRecorder.start(250);
+          
+          mediaStreamSource.connect(scriptProcessor);
+          scriptProcessor.connect(audioContext.destination);
+          
+          // Store these so we can stop them later
+          mediaRecorder = {
+            state: 'recording',
+            stream: stream,
+            pause: () => { 
+              mediaRecorder.state = 'paused';
+              if (audioContext.state === 'running') audioContext.suspend(); 
+            },
+            resume: () => { 
+              mediaRecorder.state = 'recording';
+              if (audioContext.state === 'suspended') audioContext.resume(); 
+            },
+            stop: () => {
+              mediaRecorder.state = 'inactive';
+              if (scriptProcessor) {
+                scriptProcessor.disconnect();
+                mediaStreamSource.disconnect();
+              }
+              if (audioContext) audioContext.close();
+              if (mediaRecorder.onstop) mediaRecorder.onstop();
+            }
+          };
+
           liveState = 'recording';
           setLiveStatus('Recording…', 'recording');
           $('liveStartBtn').style.display = 'none';
@@ -1099,7 +1136,7 @@
         if (liveWs && liveWs.readyState === WebSocket.OPEN) {
           // MediaRecorder emits its final dataavailable event before onstop,
           // so the backend receives every stored playback chunk before the
-          // Deepgram stream is closed.
+          // Azure stream is closed.
           liveWs.send('stop');
         }
       };

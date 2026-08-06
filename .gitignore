@@ -9,3 +9,6 @@ desktop/venv/
 desktop/build/
 desktop/dist/
 *.spec
+.pytest_cache/
+.coverage
+htmlcov/

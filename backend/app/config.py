@@ -27,8 +27,10 @@ class Settings(BaseSettings):
     S3_SECRET_ACCESS_KEY: str = ""
     S3_REGION: str = "us-west-002"
 
-    SPEECH_PROVIDER: str = "deepgram"  # deepgram | whisper | openrouter | assemblyai | gladia
+    SPEECH_PROVIDER: str = "azure"  # azure | deepgram | whisper | openrouter | assemblyai | gladia
     DEEPGRAM_API_KEY: str = ""
+    AZURE_SPEECH_KEY: str = ""
+    AZURE_SPEECH_REGION: str = ""
     OPENAI_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
     ASSEMBLYAI_API_KEY: str = ""

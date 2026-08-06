@@ -41,7 +41,7 @@ class Job(Base):
     original_filename = Column(String, nullable=False)
     file_id = Column(String, ForeignKey("files.id"), nullable=True)
 
-    provider = Column(String, default="deepgram")
+    provider = Column(String, default="azure")
     language = Column(String, default="en")
 
     error_message = Column(Text, nullable=True)

@@ -1,7 +1,7 @@
 """
 WebSocket endpoint for Live Transcription mode.
 
-Proxies microphone audio to Deepgram's real-time streaming API and relays
+Proxies microphone audio to Azure Speech SDK's real-time streaming API and relays
 partial/final transcript events back to the client as they arrive. When the
 session stops, the finalized words/utterances are saved through the EXACT
 SAME JobRepository used by file uploads - so a live session becomes a normal
@@ -9,14 +9,7 @@ completed Job, appears in the regular job list, and supports every existing
 export format (txt/json/srt/vtt) automatically, with zero special casing
 anywhere else in the app.
 
-Supports two audio sources via a query parameter, since browsers and desktop
-clients send different raw formats:
-  - ?format=webm  (default) - browser MediaRecorder output (audio/webm;opus)
-  - ?format=linear16        - raw 16-bit PCM, e.g. from the desktop app's
-                              microphone capture (sounddevice), 16kHz mono
-
-This file is entirely additive: it does not import from or modify jobs.py,
-job_service.py, or the RQ queue in any way.
+Supports linear16 audio format (raw 16-bit PCM, 16kHz mono).
 """
 import json
 import asyncio
@@ -25,9 +18,9 @@ import uuid
 import wave
 from datetime import datetime
 
-import websockets as ws_client
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy.orm import Session
+import azure.cognitiveservices.speech as speechsdk
 
 from app.config import settings
 from app.database import SessionLocal
@@ -42,119 +35,169 @@ logger = setup_logging("live")
 router = APIRouter(tags=["live"])
 
 
-def build_deepgram_live_url(audio_format: str, sample_rate: int = 16000) -> str:
-    base = (
-        "wss://api.deepgram.com/v1/listen"
-        "?punctuate=true&diarize=true&interim_results=true&smart_format=true&model=nova-2"
-    )
-    if audio_format == "linear16":
-        base += f"&encoding=linear16&sample_rate={sample_rate}&channels=1"
-    return base
-
-
 @router.websocket("/ws/live")
 async def live_transcription(
     websocket: WebSocket,
-    format: str = Query(default="webm"),
+    format: str = Query(default="linear16"),
     sample_rate: int = Query(default=16000),
 ):
     await websocket.accept()
 
-    if format == "linear16" and sample_rate not in (16000, 48000):
+    if format != "linear16":
+        await websocket.send_json({"type": "error", "message": "Only linear16 format is supported for Azure live transcription"})
+        await websocket.close()
+        return
+
+    if sample_rate not in (16000, 48000):
         await websocket.send_json({"type": "error", "message": "linear16 supports 16 kHz or 48 kHz audio"})
         await websocket.close()
         return
 
-    if not settings.DEEPGRAM_API_KEY:
-        await websocket.send_json({"type": "error", "message": "DEEPGRAM_API_KEY not configured on server"})
+    if not settings.AZURE_SPEECH_KEY or not settings.AZURE_SPEECH_REGION:
+        await websocket.send_json({"type": "error", "message": "AZURE_SPEECH_KEY not configured on server"})
         await websocket.close()
         return
 
     collected_words = []
     collected_segments = []
-    # Keep the browser's WebM (or desktop linear PCM) until Deepgram finalizes
-    # the session. SpooledTemporaryFile avoids retaining long recordings only
-    # in RAM while still presenting the normal BinaryIO interface to storage.
     recorded_audio = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
 
     try:
-        async with ws_client.connect(
-            build_deepgram_live_url(format, sample_rate),
-            # websockets 14+ renamed the legacy ``extra_headers`` argument.
-            # Pinning the supported range in requirements keeps this aligned
-            # with the installed client API instead of silently failing before
-            # a Deepgram connection is opened.
-            additional_headers={"Authorization": f"Token {settings.DEEPGRAM_API_KEY}"},
-            ping_interval=5,
-        ) as dg_ws:
+        speech_config = speechsdk.SpeechConfig(subscription=settings.AZURE_SPEECH_KEY, region=settings.AZURE_SPEECH_REGION)
+        speech_config.speech_recognition_language = "en-US"
+        speech_config.output_format = speechsdk.OutputFormat.Detailed
+        speech_config.request_word_level_timestamps()
 
-            async def forward_audio_to_deepgram():
-                try:
-                    while True:
-                        message = await websocket.receive()
-                        if message.get("type") == "websocket.disconnect":
-                            break
-                        if message.get("bytes") is not None:
-                            chunk = message["bytes"]
-                            recorded_audio.write(chunk)
-                            await dg_ws.send(chunk)
-                        elif message.get("text") is not None:
-                            if message["text"] == "stop":
-                                await dg_ws.send(json.dumps({"type": "CloseStream"}))
-                                break
-                except WebSocketDisconnect:
-                    pass
-                except Exception as e:
-                    logger.warning(f"Live audio forwarding stopped: {e}")
-
-            async def relay_deepgram_results():
-                try:
-                    async for raw in dg_ws:
-                        data = json.loads(raw)
-                        channel = data.get("channel", {})
-                        alternatives = channel.get("alternatives", [])
-                        if not alternatives:
-                            continue
-                        alt = alternatives[0]
-                        text = alt.get("transcript", "")
-                        if not text:
-                            continue
-
-                        is_final = data.get("is_final", False)
-                        words_payload = alt.get("words", [])
-                        speaker_idx = words_payload[0].get("speaker", 0) if words_payload else 0
-                        speaker_label = f"Speaker {speaker_idx + 1}"
-
-                        await websocket.send_json({
-                            "type": "transcript",
-                            "is_final": is_final,
-                            "speaker": speaker_label,
-                            "text": text,
-                            "confidence": alt.get("confidence"),
-                        })
-
-                        if is_final:
-                            start = words_payload[0]["start"] if words_payload else 0.0
-                            end = words_payload[-1]["end"] if words_payload else 0.0
-                            collected_segments.append({
-                                "speaker": speaker_label,
-                                "start": start,
-                                "end": end,
-                                "text": text,
-                                "confidence": alt.get("confidence"),
-                            })
-                            for w in words_payload:
-                                collected_words.append({
+        push_stream = speechsdk.audio.PushAudioInputStream(
+            stream_format=speechsdk.audio.AudioStreamFormat(samples_per_second=sample_rate, bits_per_sample=16, channels=1)
+        )
+        audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
+        
+        transcriber = speechsdk.transcription.ConversationTranscriber(speech_config=speech_config, audio_config=audio_config)
+        
+        msg_queue = asyncio.Queue()
+        
+        def recognized_cb(evt):
+            if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
+                speaker_id = evt.result.speaker_id
+                speaker_label = f"Speaker {speaker_id}" if speaker_id else "Speaker 1"
+                text = evt.result.text
+                
+                confidence = 0.0
+                words_payload = []
+                properties = evt.result.properties
+                json_result = properties.get(speechsdk.PropertyId.SpeechServiceResponse_JsonResult)
+                if json_result:
+                    try:
+                        parsed = json.loads(json_result)
+                        n_best = parsed.get("NBest", [])
+                        if n_best:
+                            best = n_best[0]
+                            confidence = best.get("Confidence", 0.0)
+                            for w in best.get("Words", []):
+                                words_payload.append({
                                     "speaker": speaker_label,
-                                    "word": w.get("punctuated_word") or w.get("word", ""),
-                                    "start": w.get("start", 0.0),
-                                    "end": w.get("end", 0.0),
-                                    "confidence": w.get("confidence"),
+                                    "word": w.get("Word", ""),
+                                    "start": w.get("Offset", 0) / 10000000.0,
+                                    "end": (w.get("Offset", 0) + w.get("Duration", 0)) / 10000000.0,
+                                    "confidence": w.get("Confidence", 0.0)
                                 })
-                except Exception as e:
-                    logger.warning(f"Live result relay stopped: {e}")
-
-            await asyncio.gather(forward_audio_to_deepgram(), relay_deepgram_results())
+                    except Exception:
+                        pass
+                        
+                msg_queue.put_nowait({
+                    "type": "transcript",
+                    "is_final": True,
+                    "speaker": speaker_label,
+                    "text": text,
+                    "confidence": confidence,
+                    "words": words_payload,
+                    "start": evt.result.offset / 10000000.0,
+                    "end": (evt.result.offset + evt.result.duration) / 10000000.0
+                })
+                
+        def recognizing_cb(evt):
+            if evt.result.reason == speechsdk.ResultReason.RecognizingSpeech:
+                speaker_id = evt.result.speaker_id
+                speaker_label = f"Speaker {speaker_id}" if speaker_id else "Speaker 1"
+                text = evt.result.text
+                msg_queue.put_nowait({
+                    "type": "transcript",
+                    "is_final": False,
+                    "speaker": speaker_label,
+                    "text": text,
+                    "confidence": 0.0
+                })
+                
+        def canceled_cb(evt):
+            if evt.reason == speechsdk.CancellationReason.Error:
+                msg_queue.put_nowait({"type": "error", "message": f"Canceled: {evt.error_details}"})
+            msg_queue.put_nowait(None)
+            
+        def session_stopped_cb(evt):
+            msg_queue.put_nowait(None)
+            
+        transcriber.transcribed.connect(recognized_cb)
+        transcriber.transcribing.connect(recognizing_cb)
+        transcriber.canceled.connect(canceled_cb)
+        transcriber.session_stopped.connect(session_stopped_cb)
+        
+        transcriber.start_transcribing_async()
+        
+        async def receive_audio():
+            try:
+                while True:
+                    message = await websocket.receive()
+                    if message.get("type") == "websocket.disconnect":
+                        break
+                    if message.get("bytes") is not None:
+                        chunk = message["bytes"]
+                        recorded_audio.write(chunk)
+                        push_stream.write(chunk)
+                    elif message.get("text") is not None:
+                        if message["text"] == "stop":
+                            push_stream.close()
+                            break
+            except WebSocketDisconnect:
+                push_stream.close()
+            except Exception as e:
+                logger.warning(f"Live audio forwarding stopped: {e}")
+                push_stream.close()
+                
+        async def send_results():
+            try:
+                while True:
+                    msg = await msg_queue.get()
+                    if msg is None:
+                        break
+                    if msg.get("type") == "error":
+                        await websocket.send_json(msg)
+                        break
+                    
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "is_final": msg["is_final"],
+                        "speaker": msg["speaker"],
+                        "text": msg["text"],
+                        "confidence": msg["confidence"]
+                    })
+                    
+                    if msg["is_final"]:
+                        collected_segments.append({
+                            "speaker": msg["speaker"],
+                            "start": msg["start"],
+                            "end": msg["end"],
+                            "text": msg["text"],
+                            "confidence": msg["confidence"]
+                        })
+                        for w in msg.get("words", []):
+                            collected_words.append(w)
+            except Exception as e:
+                logger.warning(f"Live result relay stopped: {e}")
+                
+        await asyncio.gather(receive_audio(), send_results())
+        
+        transcriber.stop_transcribing_async()
 
     except Exception as e:
         logger.error(f"Live transcription session failed: {e}")
@@ -176,7 +219,7 @@ async def live_transcription(
             audio_file.seek(0)
 
             filename = f"Live Recording {timestamp}{suffix}"
-            job = repo.create_job(original_filename=filename, provider="deepgram-live")
+            job = repo.create_job(original_filename=filename, provider="azure-live")
             storage_key = f"uploads/{job.id}/{uuid.uuid4().hex}{suffix}"
             storage.save(storage_key, audio_file)
             repo.attach_file(job, storage_key, settings.STORAGE_BACKEND, content_type, size_bytes)
@@ -207,9 +250,8 @@ def _finalize_live_audio(recorded_audio, audio_format: str, sample_rate: int = 1
     if audio_format != "linear16":
         return recorded_audio, ".webm", "audio/webm"
 
-    # The PySide client sends raw 16-bit PCM. Wrap it in a WAV container so
-    # its saved conversation uses exactly the same playback pipeline as
-    # uploaded audio files.
+    # Wrap raw 16-bit PCM in a WAV container so its saved conversation uses
+    # exactly the same playback pipeline as uploaded audio files.
     wav_file = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
     with wave.open(wav_file, "wb") as wav:
         wav.setnchannels(1)

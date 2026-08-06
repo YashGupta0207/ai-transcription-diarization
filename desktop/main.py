@@ -374,7 +374,7 @@ class LiveTranscriptionDialog(QDialog):
 
         self._current_speaker = None
         self._paused = False
-        # Positions delimit the one provisional Deepgram hypothesis at the end
+        # Positions delimit the one provisional Azure hypothesis at the end
         # of the document.  Finalized text is never selected or redrawn.
         self._interim_start = None
         self._interim_end = None
@@ -431,7 +431,7 @@ class LiveTranscriptionDialog(QDialog):
         self.pause_btn.setEnabled(False)
 
     def on_transcript(self, data: dict):
-        """Apply one Deepgram event without clearing/rebuilding the document.
+        """Apply one Azure event without clearing/rebuilding the document.
 
         Interim results are alternative hypotheses for the same unfinished
         utterance.  They replace only the dedicated trailing range.  A final
