@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     SPEECH_PROVIDER: str = "azure"  # azure | gateway | deepgram | whisper | openrouter | assemblyai | gladia
     DEEPGRAM_API_KEY: str = ""
     GATEWAY_API_KEY: str = ""
-    GATEWAY_BASE_URL: str = "https://ai-gateway-admin.onrender.com"
+    GATEWAY_BASE_URL: str = "https://ai-gateway-platform-cex4.onrender.com"
     GATEWAY_TARGET_PROVIDER: str = "deepgram"
     AZURE_SPEECH_KEY: str = ""
     AZURE_SPEECH_REGION: str = ""
