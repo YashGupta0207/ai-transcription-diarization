@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dxai._client import DXAIError, _BaseGatewayClient
-from dxai.resources.chat import Chat
+from ._client import DXAIError, _BaseGatewayClient
+from .resources.chat import Chat
 
 
 class DXAI(_BaseGatewayClient):
