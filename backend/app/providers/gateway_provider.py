@@ -34,57 +34,125 @@ class GatewayProvider(SpeechProvider):
         with open(audio_file_path, "rb") as f:
             audio_bytes = f.read()
             
-        params = {
-            "model": "nova-2",
-            "diarize": "true",
-            "punctuate": "true",
-            "utterances": "true",
-            "language": language,
-        }
-        
-        data = self.client.transcribe(
-            provider=self.target_provider,
-            audio=audio_bytes,
-            mimetype="audio/wav",
-            params=params,
-        )
-
-        segments = []
-        words = []
-        results = data.get("results", {})
-        utterances = results.get("utterances", [])
-        for i, utt in enumerate(utterances):
-            speaker_idx = utt.get("speaker", 0)
-            speaker_label = _speaker_label(speaker_idx)
-            segments.append(
-                TranscriptSegment(
-                    speaker=speaker_label,
-                    start=utt.get("start", 0.0),
-                    end=utt.get("end", 0.0),
-                    text=utt.get("transcript", "").strip(),
-                    confidence=utt.get("confidence"),
-                )
+        if self.target_provider == "azure":
+            import json
+            definition = {
+                "locales": [language],
+                "profanityFilterMode": "Masked",
+                "diarization": {
+                    "speakers": {
+                        "minCount": 1,
+                        "maxCount": 5
+                    }
+                }
+            }
+            data = self.client.transcribe(
+                provider=self.target_provider,
+                path="/speechtotext/transcriptions:transcribe?api-version=2024-11-15",
+                files={"audio": (os.path.basename(audio_file_path), audio_bytes, "audio/wav")},
+                data={"definition": json.dumps(definition)},
             )
-            for w in utt.get("words", []):
-                if not w.get("word") or w.get("start") is None or w.get("end") is None:
+            
+            segments = []
+            words = []
+            phrases = data.get("recognizedPhrases", [])
+            for phrase in phrases:
+                if phrase.get("recognitionStatus") != "Success":
                     continue
-                words.append(
-                    WordTimestamp(
+                speaker_label = _speaker_label(phrase.get("speaker", 0))
+                
+                def parse_pt(pt_str):
+                    if not pt_str: return 0.0
+                    pt_str = pt_str.replace("PT", "")
+                    minutes = 0.0
+                    if "M" in pt_str:
+                        m_part, pt_str = pt_str.split("M")
+                        minutes = float(m_part)
+                    seconds = 0.0
+                    if "S" in pt_str:
+                        seconds = float(pt_str.replace("S", ""))
+                    return minutes * 60 + seconds
+                
+                start = parse_pt(phrase.get("offset"))
+                duration = parse_pt(phrase.get("duration"))
+                
+                best = phrase.get("nBest", [{}])[0]
+                text = best.get("display", "")
+                confidence = best.get("confidence", 0.0)
+                
+                segments.append(TranscriptSegment(
+                    speaker=speaker_label,
+                    start=start,
+                    end=start + duration,
+                    text=text,
+                    confidence=confidence,
+                ))
+                
+                for w in best.get("words", []):
+                    w_start = parse_pt(w.get("offset"))
+                    w_duration = parse_pt(w.get("duration"))
+                    words.append(WordTimestamp(
                         speaker=speaker_label,
-                        word=(w.get("punctuated_word") or w.get("word", "")),
-                        start=w.get("start", 0.0),
-                        end=w.get("end", 0.0),
-                        confidence=w.get("confidence"),
+                        word=w.get("word", ""),
+                        start=w_start,
+                        end=w_start + w_duration,
+                        confidence=w.get("confidence", 0.0)
+                    ))
+            words.sort(key=lambda word: word.start)
+            return TranscriptionResult(segments=segments, raw_response=data, language=language, words=words)
+            
+        else:
+            params = {
+                "model": "nova-2",
+                "diarize": "true",
+                "punctuate": "true",
+                "utterances": "true",
+                "language": language,
+            }
+            
+            data = self.client.transcribe(
+                provider=self.target_provider,
+                audio=audio_bytes,
+                mimetype="audio/wav",
+                params=params,
+            )
+
+            segments = []
+            words = []
+            results = data.get("results", {})
+            utterances = results.get("utterances", [])
+            for i, utt in enumerate(utterances):
+                speaker_idx = utt.get("speaker", 0)
+                speaker_label = _speaker_label(speaker_idx)
+                segments.append(
+                    TranscriptSegment(
+                        speaker=speaker_label,
+                        start=utt.get("start", 0.0),
+                        end=utt.get("end", 0.0),
+                        text=utt.get("transcript", "").strip(),
+                        confidence=utt.get("confidence"),
                     )
                 )
+                for w in utt.get("words", []):
+                    if not w.get("word") or w.get("start") is None or w.get("end") is None:
+                        continue
+                    words.append(
+                        WordTimestamp(
+                            speaker=speaker_label,
+                            word=(w.get("punctuated_word") or w.get("word", "")),
+                            start=w.get("start", 0.0),
+                            end=w.get("end", 0.0),
+                            confidence=w.get("confidence"),
+                        )
+                    )
 
-        if not words:
-            alternative = ((results.get("channels") or [{}])[0].get("alternatives") or [{}])[0]
-            for w in alternative.get("words", []):
-                if not w.get("word") or w.get("start") is None or w.get("end") is None:
-                    continue
-                speaker_label = _speaker_label(w.get("speaker", 0))
-                words.append(WordTimestamp(speaker=speaker_label, word=w.get("punctuated_word") or w["word"],
-                                           start=w["start"], end=w["end"], confidence=w.get("confidence")))
-        words.sort(key=lambda word: word.start)
-        return TranscriptionResult(segments=segments, raw_response=data, language=language, words=words)
+            if not words:
+                alternative = ((results.get("channels") or [{}])[0].get("alternatives") or [{}])[0]
+                for w in alternative.get("words", []):
+                    if not w.get("word") or w.get("start") is None or w.get("end") is None:
+                        continue
+                    speaker_label = _speaker_label(w.get("speaker", 0))
+                    words.append(WordTimestamp(speaker=speaker_label, word=w.get("punctuated_word") or w["word"],
+                                               start=w["start"], end=w["end"], confidence=w.get("confidence")))
+            words.sort(key=lambda word: word.start)
+            return TranscriptionResult(segments=segments, raw_response=data, language=language, words=words)

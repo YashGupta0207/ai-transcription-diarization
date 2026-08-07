@@ -30,7 +30,9 @@ class DXAI(_BaseGatewayClient):
     def query(self, *, provider: str, path: str, query: dict | None = None) -> dict:
         return self.request(provider=provider, method="POST", path=path, json=query)
 
-    def transcribe(self, *, provider: str, audio: bytes, mimetype: str = "audio/wav", path: str = "/listen", params: dict | None = None) -> dict:
+    def transcribe(self, *, provider: str, audio: bytes = None, mimetype: str = "audio/wav", path: str = "/listen", params: dict | None = None, files: dict | None = None, data: dict | None = None) -> dict:
+        if files:
+            return self._request("POST", path, provider=provider, params=params, files=files, data=data)
         return self._request("POST", path, provider=provider, params=params, content=audio)
 
 
