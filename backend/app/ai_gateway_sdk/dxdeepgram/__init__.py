@@ -50,7 +50,7 @@ class DeepgramClient:
         response = self._http.post(
             "/gateway/listen",
             content=audio_bytes,
-            headers={"Content-Type": mimetype},
+            headers={"Content-Type": mimetype, "X-Gateway-Provider": "deepgram"},
             params=params,
         )
         if response.status_code >= 400:
