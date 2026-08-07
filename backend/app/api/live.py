@@ -67,7 +67,7 @@ async def live_transcription(
     dxai_client = DXAILiveClient(
         api_key=settings.GATEWAY_API_KEY,
         base_url=settings.GATEWAY_BASE_URL,
-        provider=settings.SPEECH_PROVIDER,
+        provider=settings.GATEWAY_TARGET_PROVIDER if settings.SPEECH_PROVIDER == "gateway" else settings.SPEECH_PROVIDER,
         sample_rate=sample_rate,
         format=format
     )
