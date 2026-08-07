@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     DEEPGRAM_API_KEY: str = ""
     GATEWAY_API_KEY: str = ""
     GATEWAY_BASE_URL: str = "https://ai-gateway-platform-cex4.onrender.com"
-    GATEWAY_TARGET_PROVIDER: str = "deepgram"
+    GATEWAY_TARGET_PROVIDER: str = "azure"
     AZURE_SPEECH_KEY: str = ""
     AZURE_SPEECH_REGION: str = ""
     OPENAI_API_KEY: str = ""
