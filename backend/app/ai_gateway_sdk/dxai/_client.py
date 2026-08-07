@@ -36,10 +36,10 @@ class _BaseGatewayClient:
         )
 
     def _request(self, method: str, path: str, *, json_body: dict | None = None,
-                 files: dict | None = None, params: dict | None = None, provider: str | None = None,
+                 files: dict | None = None, data: dict | None = None, params: dict | None = None, provider: str | None = None,
                  content: bytes | None = None) -> dict:
         headers = {"X-Gateway-Provider": provider} if provider else None
-        response = self._http.request(method, f"/gateway{path}", json=json_body, files=files, params=params, headers=headers, content=content)
+        response = self._http.request(method, f"/gateway{path}", json=json_body, files=files, data=data, params=params, headers=headers, content=content)
         if response.status_code >= 400:
             raise DXAIError(
                 f"Gateway request failed with status {response.status_code}",

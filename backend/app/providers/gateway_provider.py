@@ -7,7 +7,7 @@ through the gateway.
 import sys
 import os
 
-from app.ai_gateway_sdk.dxdeepgram import DeepgramClient
+from app.ai_gateway_sdk.dxai import DXAI
 from app.providers.base import SpeechProvider, TranscriptionResult, TranscriptSegment, WordTimestamp
 from app.config import settings
 
@@ -27,19 +27,20 @@ class GatewayProvider(SpeechProvider):
         if not self.api_key:
             raise ValueError("GATEWAY_API_KEY is not configured")
             
-        self.client = DeepgramClient(api_key=self.api_key, base_url=self.base_url)
+        self.client = DXAI(api_key=self.api_key, base_url=self.base_url)
 
     def transcribe_and_diarize(self, audio_file_path: str, language: str = "en") -> TranscriptionResult:
-        # The gateway uses Deepgram under the hood, so we pass Deepgram parameters
-        params = {
-            "model": "nova-2",
-            "diarize": "true",
-            "punctuate": "true",
-            "utterances": "true",
-            "language": language,
-        }
-        
-        data = self.client.transcribe_file(audio_file_path, mimetype="audio/wav", **params)
+        with open(audio_file_path, "rb") as f:
+            audio_bytes = f.read()
+            
+        data = self.client.audio.transcriptions.create(
+            file=("audio.wav", audio_bytes, "audio/wav"),
+            model="nova-2",
+            language=language,
+            diarize="true",
+            punctuate="true",
+            utterances="true",
+        )
 
         segments = []
         words = []
