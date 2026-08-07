@@ -33,13 +33,19 @@ class GatewayProvider(SpeechProvider):
         with open(audio_file_path, "rb") as f:
             audio_bytes = f.read()
             
-        data = self.client.audio.transcriptions.create(
-            file=("audio.wav", audio_bytes, "audio/wav"),
-            model="nova-2",
-            language=language,
-            diarize="true",
-            punctuate="true",
-            utterances="true",
+        params = {
+            "model": "nova-2",
+            "diarize": "true",
+            "punctuate": "true",
+            "utterances": "true",
+            "language": language,
+        }
+        
+        data = self.client.transcribe(
+            provider="deepgram",
+            audio=audio_bytes,
+            mimetype="audio/wav",
+            params=params,
         )
 
         segments = []
