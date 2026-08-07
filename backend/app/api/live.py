@@ -53,8 +53,8 @@ async def live_transcription(
         await websocket.close()
         return
 
-    if not settings.AZURE_SPEECH_KEY or not settings.AZURE_SPEECH_REGION:
-        await websocket.send_json({"type": "error", "message": "AZURE_SPEECH_KEY not configured on server"})
+    if not settings.GATEWAY_API_KEY:
+        await websocket.send_json({"type": "error", "message": "GATEWAY_API_KEY not configured on server"})
         await websocket.close()
         return
 
@@ -62,87 +62,18 @@ async def live_transcription(
     collected_segments = []
     recorded_audio = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
 
-    try:
-        speech_config = speechsdk.SpeechConfig(subscription=settings.AZURE_SPEECH_KEY, region=settings.AZURE_SPEECH_REGION)
-        speech_config.speech_recognition_language = "en-US"
-        speech_config.output_format = speechsdk.OutputFormat.Detailed
-        speech_config.request_word_level_timestamps()
+    from app.ai_gateway_sdk.dxai import DXAILiveClient
 
-        push_stream = speechsdk.audio.PushAudioInputStream(
-            stream_format=speechsdk.audio.AudioStreamFormat(samples_per_second=sample_rate, bits_per_sample=16, channels=1)
-        )
-        audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
-        
-        transcriber = speechsdk.transcription.ConversationTranscriber(speech_config=speech_config, audio_config=audio_config)
-        
-        msg_queue = asyncio.Queue()
-        
-        def recognized_cb(evt):
-            if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
-                speaker_id = evt.result.speaker_id
-                speaker_label = f"Speaker {speaker_id}" if speaker_id else "Speaker 1"
-                text = evt.result.text
-                
-                confidence = 0.0
-                words_payload = []
-                properties = evt.result.properties
-                json_result = properties.get(speechsdk.PropertyId.SpeechServiceResponse_JsonResult)
-                if json_result:
-                    try:
-                        parsed = json.loads(json_result)
-                        n_best = parsed.get("NBest", [])
-                        if n_best:
-                            best = n_best[0]
-                            confidence = best.get("Confidence", 0.0)
-                            for w in best.get("Words", []):
-                                words_payload.append({
-                                    "speaker": speaker_label,
-                                    "word": w.get("Word", ""),
-                                    "start": w.get("Offset", 0) / 10000000.0,
-                                    "end": (w.get("Offset", 0) + w.get("Duration", 0)) / 10000000.0,
-                                    "confidence": w.get("Confidence", 0.0)
-                                })
-                    except Exception:
-                        pass
-                        
-                msg_queue.put_nowait({
-                    "type": "transcript",
-                    "is_final": True,
-                    "speaker": speaker_label,
-                    "text": text,
-                    "confidence": confidence,
-                    "words": words_payload,
-                    "start": evt.result.offset / 10000000.0,
-                    "end": (evt.result.offset + evt.result.duration) / 10000000.0
-                })
-                
-        def recognizing_cb(evt):
-            if evt.result.reason == speechsdk.ResultReason.RecognizingSpeech:
-                speaker_id = evt.result.speaker_id
-                speaker_label = f"Speaker {speaker_id}" if speaker_id else "Speaker 1"
-                text = evt.result.text
-                msg_queue.put_nowait({
-                    "type": "transcript",
-                    "is_final": False,
-                    "speaker": speaker_label,
-                    "text": text,
-                    "confidence": 0.0
-                })
-                
-        def canceled_cb(evt):
-            if evt.reason == speechsdk.CancellationReason.Error:
-                msg_queue.put_nowait({"type": "error", "message": f"Canceled: {evt.error_details}"})
-            msg_queue.put_nowait(None)
-            
-        def session_stopped_cb(evt):
-            msg_queue.put_nowait(None)
-            
-        transcriber.transcribed.connect(recognized_cb)
-        transcriber.transcribing.connect(recognizing_cb)
-        transcriber.canceled.connect(canceled_cb)
-        transcriber.session_stopped.connect(session_stopped_cb)
-        
-        transcriber.start_transcribing_async()
+    dxai_client = DXAILiveClient(
+        api_key=settings.GATEWAY_API_KEY,
+        base_url=settings.GATEWAY_BASE_URL,
+        provider=settings.SPEECH_PROVIDER,
+        sample_rate=sample_rate,
+        format=format
+    )
+
+    try:
+        await dxai_client.connect()
         
         async def receive_audio():
             try:
@@ -153,42 +84,32 @@ async def live_transcription(
                     if message.get("bytes") is not None:
                         chunk = message["bytes"]
                         recorded_audio.write(chunk)
-                        push_stream.write(chunk)
+                        await dxai_client.send_audio(chunk)
                     elif message.get("text") is not None:
                         if message["text"] == "stop":
-                            push_stream.close()
+                            await dxai_client.send_text("stop")
                             break
             except WebSocketDisconnect:
-                push_stream.close()
+                pass
             except Exception as e:
                 logger.warning(f"Live audio forwarding stopped: {e}")
-                push_stream.close()
                 
         async def send_results():
             try:
-                while True:
-                    msg = await msg_queue.get()
-                    if msg is None:
-                        break
+                async for msg in dxai_client.receive_events():
                     if msg.get("type") == "error":
                         await websocket.send_json(msg)
                         break
                     
-                    await websocket.send_json({
-                        "type": "transcript",
-                        "is_final": msg["is_final"],
-                        "speaker": msg["speaker"],
-                        "text": msg["text"],
-                        "confidence": msg["confidence"]
-                    })
+                    await websocket.send_json(msg)
                     
-                    if msg["is_final"]:
+                    if msg.get("type") == "transcript" and msg.get("is_final"):
                         collected_segments.append({
-                            "speaker": msg["speaker"],
-                            "start": msg["start"],
-                            "end": msg["end"],
-                            "text": msg["text"],
-                            "confidence": msg["confidence"]
+                            "speaker": msg.get("speaker", "Speaker 1"),
+                            "start": msg.get("start", 0.0),
+                            "end": msg.get("end", 0.0),
+                            "text": msg.get("text", ""),
+                            "confidence": msg.get("confidence", 0.0)
                         })
                         for w in msg.get("words", []):
                             collected_words.append(w)
@@ -197,7 +118,7 @@ async def live_transcription(
                 
         await asyncio.gather(receive_audio(), send_results())
         
-        transcriber.stop_transcribing_async()
+        await dxai_client.close()
 
     except Exception as e:
         logger.error(f"Live transcription session failed: {e}")
@@ -205,6 +126,8 @@ async def live_transcription(
             await websocket.send_json({"type": "error", "message": str(e)})
         except Exception:
             pass
+        finally:
+            await dxai_client.close()
 
     db: Session = SessionLocal()
     persisted_audio = None

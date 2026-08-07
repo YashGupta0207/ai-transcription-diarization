@@ -68,3 +68,49 @@ class _BaseGatewayClient:
 
     def close(self) -> None:
         self._http.close()
+
+
+import websockets
+
+class DXAILiveClient:
+    def __init__(self, api_key: str | None = None, base_url: str | None = None, provider: str = "azure", sample_rate: int = 16000, format: str = "linear16"):
+        self.api_key = api_key or os.environ.get("DXAI_API_KEY")
+        if not self.api_key:
+            raise DXAIError("No API key provided.")
+        self.base_url = (base_url or os.environ.get("DXAI_BASE_URL") or "https://gateway.yourdomain.com").rstrip("/")
+        
+        if self.base_url.startswith("https://"):
+            self.ws_url = self.base_url.replace("https://", "wss://")
+        else:
+            self.ws_url = self.base_url.replace("http://", "ws://")
+            
+        self.ws_url += f"/ws/live?token={self.api_key}&provider={provider}&sample_rate={sample_rate}&format={format}"
+        self._ws = None
+
+    async def connect(self):
+        self._ws = await websockets.connect(self.ws_url)
+
+    async def send_audio(self, audio_bytes: bytes):
+        if self._ws:
+            await self._ws.send(audio_bytes)
+
+    async def send_text(self, text: str):
+        if self._ws:
+            await self._ws.send(json.dumps({"text": text}))
+
+    async def receive_events(self):
+        if not self._ws:
+            return
+        try:
+            async for message in self._ws:
+                try:
+                    yield json.loads(message)
+                except json.JSONDecodeError:
+                    pass
+        except websockets.exceptions.ConnectionClosed:
+            pass
+
+    async def close(self):
+        if self._ws:
+            await self._ws.close()
+

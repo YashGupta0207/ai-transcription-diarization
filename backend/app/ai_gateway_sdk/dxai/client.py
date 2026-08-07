@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ._client import DXAIError, _BaseGatewayClient
+from ._client import DXAIError, _BaseGatewayClient, DXAILiveClient
 from .resources.chat import Chat
 
 
@@ -36,4 +36,4 @@ class DXAI(_BaseGatewayClient):
         return self._request("POST", path, provider=provider, params=params, content=audio)
 
 
-__all__ = ["DXAI", "DXAIError"]
+__all__ = ["DXAI", "DXAIError", "DXAILiveClient"]

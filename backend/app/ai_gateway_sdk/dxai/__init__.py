@@ -1,4 +1,4 @@
-from .client import DXAI, DXAIError
+from .client import DXAI, DXAIError, DXAILiveClient
 
-__all__ = ["DXAI", "DXAIError"]
+__all__ = ["DXAI", "DXAIError", "DXAILiveClient"]
 __version__ = "0.1.0"
