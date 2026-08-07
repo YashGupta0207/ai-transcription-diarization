@@ -21,9 +21,10 @@ def _speaker_label(value) -> str:
 
 
 class GatewayProvider(SpeechProvider):
-    def __init__(self, api_key: str = None, base_url: str = None):
+    def __init__(self, api_key: str = None, base_url: str = None, target_provider: str = None):
         self.api_key = api_key or settings.GATEWAY_API_KEY
         self.base_url = base_url or settings.GATEWAY_BASE_URL
+        self.target_provider = target_provider or settings.GATEWAY_TARGET_PROVIDER
         if not self.api_key:
             raise ValueError("GATEWAY_API_KEY is not configured")
             
@@ -42,7 +43,7 @@ class GatewayProvider(SpeechProvider):
         }
         
         data = self.client.transcribe(
-            provider="deepgram",
+            provider=self.target_provider,
             audio=audio_bytes,
             mimetype="audio/wav",
             params=params,
