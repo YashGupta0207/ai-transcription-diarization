@@ -60,6 +60,15 @@ class MainWindow(QMainWindow):
 
         # ---- Left panel: job list + controls ----
         left = QVBoxLayout()
+        
+        provider_row = QHBoxLayout()
+        provider_row.addWidget(QLabel("Provider:"))
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItems(["gateway", "azure", "deepgram", "whisper", "openrouter", "assemblyai", "gladia"])
+        self.provider_combo.setCurrentText("gateway")
+        provider_row.addWidget(self.provider_combo)
+        left.addLayout(provider_row)
+
         self.upload_btn = QPushButton("Upload Audio/Video File")
         self.upload_btn.clicked.connect(self.on_upload)
         left.addWidget(self.upload_btn)
@@ -142,7 +151,8 @@ class MainWindow(QMainWindow):
         self.upload_details.setText(f"Uploading {os.path.basename(path)}\n0 B / {self._format_bytes(total_bytes)}")
         self.upload_details.setVisible(True)
         self.status_label.setText("Uploading…")
-        signals = run_in_background(self.client.upload_file, path, progress=True)
+        provider = self.provider_combo.currentText()
+        signals = run_in_background(self.client.upload_file, path, provider, progress=True)
         signals.progress.connect(self._on_upload_progress)
         signals.result.connect(lambda result: self._on_upload_complete(result, path))
         signals.error.connect(lambda error: QMessageBox.critical(self, "Upload failed", error))
