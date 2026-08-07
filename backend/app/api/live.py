@@ -88,6 +88,7 @@ async def live_transcription(
                     elif message.get("text") is not None:
                         if message["text"] == "stop":
                             await dxai_client.send_text("stop")
+                            await dxai_client.close()
                             break
             except WebSocketDisconnect:
                 pass
