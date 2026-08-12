@@ -38,7 +38,7 @@ class GatewayProvider(SpeechProvider):
         if "azureopenai" in target_lower or "openai" in target_lower or "whisper" in target_lower:
             data = self.client.transcribe(
                 provider=self.target_provider,
-                path="/v1/audio/transcriptions",
+                path="/audio/transcriptions",
                 files={"file": (os.path.basename(audio_file_path), audio_bytes, "audio/wav")},
                 data={"model": "whisper-1", "response_format": "verbose_json", "language": language},
             )
