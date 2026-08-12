@@ -39,7 +39,7 @@ class GatewayProvider(SpeechProvider):
             data = self.client.transcribe(
                 provider=self.target_provider,
                 path="/audio/transcriptions",
-                files={"file": (os.path.basename(audio_file_path), audio_bytes, "audio/wav")},
+                files={"file": (os.path.basename(audio_file_path), audio_bytes, __import__("mimetypes").guess_type(audio_file_path)[0] or "audio/wav")},
                 data={"model": "whisper-1", "response_format": "verbose_json", "language": language},
             )
             segments = []

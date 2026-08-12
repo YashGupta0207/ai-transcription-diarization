@@ -41,8 +41,14 @@ class _BaseGatewayClient:
         headers = {"X-Gateway-Provider": provider} if provider else None
         response = self._http.request(method, f"/gateway{path}", json=json_body, files=files, params=params, headers=headers, content=content, data=data)
         if response.status_code >= 400:
+            error_msg = f"Gateway request failed with status {response.status_code}"
+            try:
+                if response.text:
+                    error_msg += f": {response.text}"
+            except Exception:
+                pass
             raise DXAIError(
-                f"Gateway request failed with status {response.status_code}",
+                error_msg,
                 status_code=response.status_code, response_body=response.text,
             )
         return response.json()
