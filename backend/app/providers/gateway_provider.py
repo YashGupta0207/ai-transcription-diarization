@@ -34,7 +34,30 @@ class GatewayProvider(SpeechProvider):
         with open(audio_file_path, "rb") as f:
             audio_bytes = f.read()
             
-        if "azure" in self.target_provider.lower():
+        target_lower = self.target_provider.lower()
+        if "azureopenai" in target_lower or "openai" in target_lower or "whisper" in target_lower:
+            data = self.client.transcribe(
+                provider=self.target_provider,
+                path="/audio/transcriptions",
+                files={"file": (os.path.basename(audio_file_path), audio_bytes, "audio/wav")},
+                data={"model": "whisper-1", "response_format": "verbose_json", "language": language},
+            )
+            segments = []
+            words = []
+            for seg in data.get("segments", []):
+                start = seg.get("start", 0.0)
+                end = seg.get("end", 0.0)
+                text = seg.get("text", "").strip()
+                segments.append(TranscriptSegment(
+                    speaker="Speaker 1",
+                    start=start,
+                    end=end,
+                    text=text,
+                    confidence=None,
+                ))
+            return TranscriptionResult(segments=segments, raw_response=data, language=language, words=words)
+
+        elif "azure" in target_lower:
             import json
             definition = {
                 "locales": [language],
@@ -101,7 +124,7 @@ class GatewayProvider(SpeechProvider):
             words.sort(key=lambda word: word.start)
             return TranscriptionResult(segments=segments, raw_response=data, language=language, words=words)
             
-        else:
+        elif "deepgram" in target_lower or "gateway" in target_lower:
             params = {
                 "model": "nova-2",
                 "diarize": "true",
@@ -156,3 +179,10 @@ class GatewayProvider(SpeechProvider):
                                                start=w["start"], end=w["end"], confidence=w.get("confidence")))
             words.sort(key=lambda word: word.start)
             return TranscriptionResult(segments=segments, raw_response=data, language=language, words=words)
+            
+        elif "assemblyai" in target_lower or "gladia" in target_lower:
+            raise NotImplementedError(
+                f"Gateway routing for {self.target_provider} is not supported because it requires a two-step upload and poll process."
+            )
+        else:
+            raise ValueError(f"Unsupported target provider for gateway: {self.target_provider}")
