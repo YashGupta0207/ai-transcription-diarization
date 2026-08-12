@@ -34,7 +34,7 @@ class GatewayProvider(SpeechProvider):
         with open(audio_file_path, "rb") as f:
             audio_bytes = f.read()
             
-        if self.target_provider == "azure":
+        if "azure" in self.target_provider.lower():
             import json
             definition = {
                 "locales": [language],
