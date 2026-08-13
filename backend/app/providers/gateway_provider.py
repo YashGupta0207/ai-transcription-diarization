@@ -40,7 +40,7 @@ class GatewayProvider(SpeechProvider):
                 provider=self.target_provider,
                 path="/audio/transcriptions",
                 files={"file": (os.path.basename(audio_file_path), audio_bytes, __import__("mimetypes").guess_type(audio_file_path)[0] or "audio/wav")},
-                data={"model": "whisper-1", "response_format": "verbose_json", "language": language},
+                data={"model": "whisper-1", "response_format": "json", "language": language},
             )
             
             # Step 2: Diarization via Chat Completion
@@ -78,12 +78,22 @@ class GatewayProvider(SpeechProvider):
             except Exception as e:
                 print(f"Gateway diarization failed: {e}")
                 # Fallback to single speaker
-                for seg in data.get("segments", []):
+                segments_data = data.get("segments", [])
+                if segments_data:
+                    for seg in segments_data:
+                        segments.append(TranscriptSegment(
+                            speaker="Speaker 1",
+                            start=seg.get("start", 0.0),
+                            end=seg.get("end", 0.0),
+                            text=seg.get("text", "").strip(),
+                            confidence=None,
+                        ))
+                else:
                     segments.append(TranscriptSegment(
                         speaker="Speaker 1",
-                        start=seg.get("start", 0.0),
-                        end=seg.get("end", 0.0),
-                        text=seg.get("text", "").strip(),
+                        start=0.0,
+                        end=0.0,
+                        text=full_text,
                         confidence=None,
                     ))
                     
