@@ -42,19 +42,52 @@ class GatewayProvider(SpeechProvider):
                 files={"file": (os.path.basename(audio_file_path), audio_bytes, __import__("mimetypes").guess_type(audio_file_path)[0] or "audio/wav")},
                 data={"model": "whisper-1", "response_format": "verbose_json", "language": language},
             )
+            
+            # Step 2: Diarization via Chat Completion
+            full_text = data.get("text", "")
+            if not full_text:
+                full_text = " ".join([seg.get("text", "") for seg in data.get("segments", [])])
+                
+            import json
+            prompt = (
+                "Split the following transcript into speaker-labeled segments "
+                "with estimated start/end seconds if inferable. Return strict JSON: "
+                '{"segments":[{"speaker":"Speaker 1","start":0.0,"end":0.0,"text":"..."}]}. '
+                f"Transcript:\n{full_text}"
+            )
+            
             segments = []
+            try:
+                chat_resp = self.client.chat(
+                    provider=self.target_provider,
+                    model="gpt-4o",
+                    prompt=prompt,
+                    response_format={"type": "json_object"}
+                )
+                content = chat_resp["choices"][0]["message"]["content"]
+                parsed = json.loads(content)
+                
+                for s in parsed.get("segments", []):
+                    segments.append(TranscriptSegment(
+                        speaker=s.get("speaker", "Speaker 1"),
+                        start=float(s.get("start", 0.0)),
+                        end=float(s.get("end", 0.0)),
+                        text=s.get("text", "").strip(),
+                        confidence=None,
+                    ))
+            except Exception as e:
+                print(f"Gateway diarization failed: {e}")
+                # Fallback to single speaker
+                for seg in data.get("segments", []):
+                    segments.append(TranscriptSegment(
+                        speaker="Speaker 1",
+                        start=seg.get("start", 0.0),
+                        end=seg.get("end", 0.0),
+                        text=seg.get("text", "").strip(),
+                        confidence=None,
+                    ))
+                    
             words = []
-            for seg in data.get("segments", []):
-                start = seg.get("start", 0.0)
-                end = seg.get("end", 0.0)
-                text = seg.get("text", "").strip()
-                segments.append(TranscriptSegment(
-                    speaker="Speaker 1",
-                    start=start,
-                    end=end,
-                    text=text,
-                    confidence=None,
-                ))
             return TranscriptionResult(segments=segments, raw_response=data, language=language, words=words)
 
         elif "azure" in target_lower:
